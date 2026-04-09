@@ -2,18 +2,6 @@
 Amazon Cookie Gen — Bot de Telegram
 Compatible con Python 3.14.3
 Usando Aiogram 3.x
-=====================================
-Comandos:
-  /start             — Bienvenida e info
-  /gen               — Generar cuenta Amazon
-  /creditos          — Ver tus créditos
-  /help              — Ayuda
-
-Solo Admin:
-  /dar @usuario N    — Dar créditos
-  /quitar @usuario N — Quitar créditos
-  /stats             — Estadísticas
-  /usuarios          — Listar usuarios
 """
 
 import os
@@ -27,7 +15,7 @@ import threading
 import concurrent.futures
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from dotenv import load_dotenv
@@ -71,8 +59,6 @@ dp = Dispatcher()
 # =============================================================================
 
 def start_health_server():
-    """Servidor HTTP para health checks de Railway"""
-    
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/" or self.path == "/health":
@@ -222,18 +208,13 @@ _futures_lock = threading.Lock()
 
 
 def run_create_account_isolated(user_id: int) -> dict:
-    """Ejecuta create_account de forma aislada"""
     try:
         import main as main_module
-        
         creator = main_module.AmazonCreator()
         result = creator.create_account()
-        
         if isinstance(result, dict) and "phone" in result:
             return result
-        else:
-            return {"error": "Resultado inválido de create_account"}
-            
+        return {"error": "Resultado inválido de create_account"}
     except Exception as e:
         logger.error(f"[User {user_id}] Error en generación: {e}", exc_info=True)
         return {"error": str(e)}
@@ -296,11 +277,11 @@ def get_confirm_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 
 # =============================================================================
-# FUNCIONES DE ENVÍO
+# FUNCIONES DE ENVÍO (versiones síncronas para usar en hilos)
 # =============================================================================
 
-async def send_success_message(chat_id: int, phone: str, password: str, name: str, cookies: str, elapsed: float):
-    """Envía mensaje de éxito"""
+def send_success_message_sync(chat_id: int, phone: str, password: str, name: str, cookies: str, elapsed: float):
+    """Versión síncrona para usar desde hilos"""
     safe_phone = html.escape(phone)
     safe_password = html.escape(password)
     safe_name = html.escape(name)
@@ -319,29 +300,61 @@ async def send_success_message(chat_id: int, phone: str, password: str, name: st
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     
-    await bot.send_message(chat_id, header, reply_markup=get_main_keyboard())
+    # Crear un nuevo event loop para este hilo
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     
-    # Enviar cookies
-    safe_cookies = html.escape(cookies)
-    if len(safe_cookies) > 4000:
-        chunks = split_text(safe_cookies, 3500)
-        for idx, chunk in enumerate(chunks, 1):
-            msg = f"🍪 <b>Cookies ({idx}/{len(chunks)}):</b>\n\n<code>{chunk}</code>"
-            await bot.send_message(chat_id, msg)
-    else:
-        await bot.send_message(chat_id, f"🍪 <b>Cookies:</b>\n\n<code>{safe_cookies}</code>")
+    try:
+        loop.run_until_complete(bot.send_message(chat_id, header, reply_markup=get_main_keyboard()))
+        
+        safe_cookies = html.escape(cookies)
+        if len(safe_cookies) > 4000:
+            chunks = split_text(safe_cookies, 3500)
+            for idx, chunk in enumerate(chunks, 1):
+                msg = f"🍪 <b>Cookies ({idx}/{len(chunks)}):</b>\n\n<code>{chunk}</code>"
+                loop.run_until_complete(bot.send_message(chat_id, msg))
+        else:
+            loop.run_until_complete(bot.send_message(chat_id, f"🍪 <b>Cookies:</b>\n\n<code>{safe_cookies}</code>"))
+    finally:
+        loop.close()
 
 
-async def send_error_message(chat_id: int, error_msg: str, credits_restored: int):
-    """Envía mensaje de error"""
-    await bot.send_message(
-        chat_id,
-        f"❌ <b>Error al generar la cuenta</b>\n\n"
-        f"<code>{html.escape(error_msg[:300])}</code>\n\n"
-        f"💳 <b>Tus créditos han sido devueltos</b>\n"
-        f"Balance actual: <b>{credits_restored}</b>",
-        reply_markup=get_main_keyboard()
-    )
+def send_error_message_sync(chat_id: int, error_msg: str, credits_restored: int):
+    """Versión síncrona para usar desde hilos"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        loop.run_until_complete(bot.send_message(
+            chat_id,
+            f"❌ <b>Error al generar la cuenta</b>\n\n"
+            f"<code>{html.escape(error_msg[:300])}</code>\n\n"
+            f"💳 <b>Tus créditos han sido devueltos</b>\n"
+            f"Balance actual: <b>{credits_restored}</b>",
+            reply_markup=get_main_keyboard()
+        ))
+    finally:
+        loop.close()
+
+
+def notify_admin_sync(admin_id: int, user, phone: str, name: str, cookie_count: int, elapsed: float):
+    """Notifica a admin desde hilo"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        loop.run_until_complete(bot.send_message(
+            admin_id,
+            f"🔔 <b>Nueva generación exitosa</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 {html.escape(user.first_name or '')} (@{user.username or '?'})\n"
+            f"📞 {html.escape(phone)}\n"
+            f"👤 {html.escape(name)}\n"
+            f"🍪 Cookies: {cookie_count}\n"
+            f"⏱ Tiempo: {elapsed:.2f}s"
+        ))
+    finally:
+        loop.close()
 
 
 # =============================================================================
@@ -708,52 +721,29 @@ async def callback_gen(callback: CallbackQuery):
                 elapsed = result.get("elapsed", 0)
                 
                 db.record_gen(user.id, user.username or "", phone, name)
+                cookie_count = count_cookies(cookies)
                 
-                # Enviar resultado
-                asyncio.run_coroutine_threadsafe(
-                    send_success_message(user.id, phone, password, name, cookies, elapsed),
-                    asyncio.get_event_loop()
-                )
+                # Enviar resultado usando función síncrona
+                send_success_message_sync(user.id, phone, password, name, cookies, elapsed)
                 
                 # Notificar a admins
                 for admin_id in ADMIN_IDS:
-                    asyncio.run_coroutine_threadsafe(
-                        bot.send_message(
-                            admin_id,
-                            f"🔔 <b>Nueva generación exitosa</b>\n"
-                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                            f"👤 {html.escape(user.first_name or '')} (@{user.username or '?'})\n"
-                            f"📞 {html.escape(phone)}\n"
-                            f"👤 {html.escape(name)}\n"
-                            f"🍪 Cookies: {count_cookies(cookies)}\n"
-                            f"⏱ Tiempo: {elapsed:.2f}s"
-                        ),
-                        asyncio.get_event_loop()
-                    )
+                    notify_admin_sync(admin_id, user, phone, name, cookie_count, elapsed)
                     
             else:
                 db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
                 credits_restored = db.get_credits(user.id)
-                asyncio.run_coroutine_threadsafe(
-                    send_error_message(user.id, result["error"], credits_restored),
-                    asyncio.get_event_loop()
-                )
+                send_error_message_sync(user.id, result["error"], credits_restored)
                 
         except concurrent.futures.TimeoutError:
             db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
             credits_restored = db.get_credits(user.id)
-            asyncio.run_coroutine_threadsafe(
-                send_error_message(user.id, "Timeout de 5 minutos excedido", credits_restored),
-                asyncio.get_event_loop()
-            )
+            send_error_message_sync(user.id, "Timeout de 5 minutos excedido", credits_restored)
             
         except Exception as e:
             db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
             credits_restored = db.get_credits(user.id)
-            asyncio.run_coroutine_threadsafe(
-                send_error_message(user.id, str(e), credits_restored),
-                asyncio.get_event_loop()
-            )
+            send_error_message_sync(user.id, str(e), credits_restored)
             
         finally:
             with _futures_lock:
@@ -767,7 +757,6 @@ async def callback_gen(callback: CallbackQuery):
 # =============================================================================
 
 async def main():
-    """Función principal"""
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN no configurado.")
         sys.exit(1)
@@ -793,7 +782,6 @@ async def main():
 
 
 def start():
-    """Punto de entrada para Railway"""
     asyncio.run(main())
 
 
