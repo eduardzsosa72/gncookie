@@ -1,1 +1,1 @@
-python-3.11.9
+echo "worker: python bot.py" > Procfile

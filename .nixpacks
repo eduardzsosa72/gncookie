@@ -1,0 +1,11 @@
+mkdir -p .nixpacks
+echo '{
+  "phases": {
+    "setup": {
+      "nixPkgs": ["python311"]
+    },
+    "install": {
+      "cmds": ["pip install -r requirements.txt"]
+    }
+  }
+}' > .nixpacks/config.toml
