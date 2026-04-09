@@ -1,0 +1,141 @@
+{
+  "users": {
+    "6319087504": {
+      "id": 6319087504,
+      "username": "Macrzz6",
+      "first_name": "BILLY",
+      "credits": 925,
+      "total_generated": 6,
+      "total_credits_received": 1015,
+      "joined_at": "2026-04-09T01:50:33.172266",
+      "last_gen": "2026-04-09T03:26:39.116566"
+    },
+    "7606441676": {
+      "id": 7606441676,
+      "username": "Gokupelon",
+      "first_name": ":v",
+      "credits": 955,
+      "total_generated": 3,
+      "total_credits_received": 1000,
+      "joined_at": "2026-04-09T02:35:31.276622",
+      "last_gen": "2026-04-09T03:26:55.490194"
+    },
+    "8540928529": {
+      "id": 8540928529,
+      "username": "NARUTO_SOY1",
+      "first_name": "NARUTO⛓️",
+      "credits": 0,
+      "total_generated": 0,
+      "total_credits_received": 0,
+      "joined_at": "2026-04-09T02:39:34.475528",
+      "last_gen": null
+    },
+    "8211081946": {
+      "id": 8211081946,
+      "username": "BIUTIFUL_5661",
+      "first_name": "Biutiful",
+      "credits": 0,
+      "total_generated": 0,
+      "total_credits_received": 0,
+      "joined_at": "2026-04-09T02:59:08.036017",
+      "last_gen": null
+    }
+  },
+  "generated": [
+    {
+      "user_id": 6319087504,
+      "username": "Macrzz6",
+      "phone": "18199523047",
+      "name": "Meagan Anderson",
+      "timestamp": "2026-04-09T01:51:37.722462",
+      "credits_used": 15
+    },
+    {
+      "user_id": 6319087504,
+      "username": "Macrzz6",
+      "phone": "18732843285",
+      "name": "Scott Robertson",
+      "timestamp": "2026-04-09T02:07:07.465276",
+      "credits_used": 15
+    },
+    {
+      "user_id": 6319087504,
+      "username": "Macrzz6",
+      "phone": "18732843136",
+      "name": "Lori Vasquez",
+      "timestamp": "2026-04-09T02:20:19.163422",
+      "credits_used": 15
+    },
+    {
+      "user_id": 7606441676,
+      "username": "Gokupelon",
+      "phone": "18732843462",
+      "name": "Michael Mooney",
+      "timestamp": "2026-04-09T02:36:46.390116",
+      "credits_used": 15
+    },
+    {
+      "user_id": 6319087504,
+      "username": "Macrzz6",
+      "phone": "14503293104",
+      "name": "Nicholas Hall",
+      "timestamp": "2026-04-09T03:01:21.923899",
+      "credits_used": 15
+    },
+    {
+      "user_id": 7606441676,
+      "username": "Gokupelon",
+      "phone": "15815843307",
+      "name": "Ashley Harris",
+      "timestamp": "2026-04-09T03:16:14.881776",
+      "credits_used": 15
+    },
+    {
+      "user_id": 6319087504,
+      "username": "Macrzz6",
+      "phone": "19452887775",
+      "name": "Alexandra Steele",
+      "timestamp": "2026-04-09T03:21:16.360289",
+      "credits_used": 15
+    },
+    {
+      "user_id": 6319087504,
+      "username": "Macrzz6",
+      "phone": "18732843364",
+      "name": "Kristi Hughes",
+      "timestamp": "2026-04-09T03:26:39.116578",
+      "credits_used": 15
+    },
+    {
+      "user_id": 7606441676,
+      "username": "Gokupelon",
+      "phone": "18199523034",
+      "name": "Christine Cherry",
+      "timestamp": "2026-04-09T03:26:55.490206",
+      "credits_used": 15
+    }
+  ],
+  "credit_log": [
+    {
+      "from_id": 6319087504,
+      "to_id": 6319087504,
+      "amount": 1000,
+      "action": "dar",
+      "timestamp": "2026-04-09T01:51:04.540763"
+    },
+    {
+      "from_id": 6319087504,
+      "to_id": 7606441676,
+      "amount": 1000,
+      "action": "dar",
+      "timestamp": "2026-04-09T02:36:08.644343"
+    },
+    {
+      "from_id": 0,
+      "to_id": 6319087504,
+      "amount": 15,
+      "action": "refund",
+      "timestamp": "2026-04-09T03:01:21.930613"
+    }
+  ]
+}
