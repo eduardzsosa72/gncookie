@@ -1,6 +1,6 @@
 """
 Amazon Cookie Gen — Bot de Telegram
-Compatible con Python 3.14
+Compatible con Python 3.14.3
 =====================================
 """
 
@@ -16,7 +16,7 @@ import threading
 import concurrent.futures
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Configuración de logging
@@ -39,27 +39,27 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
 PORT = int(os.getenv("PORT", "8080"))
 
 # =============================================================================
-# IMPORTAR TELEGRAM CON MANEJO DE ERRORES PARA PYTHON 3.14
+# PARCHES PARA PYTHON 3.14.3
 # =============================================================================
 
-# Parche para evitar el error de __polling_cleanup_cb en Python 3.14
-import types
+# Parche 1: Solucionar el problema de __polling_cleanup_cb
 import telegram.ext as tele_ext
 
-# Guardar el Updater original si existe
-_original_updater = None
-if hasattr(tele_ext, 'Updater'):
-    _original_updater = tele_ext.Updater
+# Guardar referencia original
+_original_updater_class = tele_ext.Updater if hasattr(tele_ext, 'Updater') else None
 
-# Crear una versión compatible de Updater para Python 3.14
-class CompatibleUpdater:
-    """Updater compatible con Python 3.14"""
+# Crear clase Updater compatible con Python 3.14.3
+class Py314Updater:
+    """Updater compatible con Python 3.14.3"""
+    
+    __slots__ = ('bot', 'update_queue', '_polling_cleanup_cb', '_running', 'logger', '_stop_event')
     
     def __init__(self, bot=None, update_queue=None, **kwargs):
         self.bot = bot
         self.update_queue = update_queue
         self._polling_cleanup_cb = None
         self._running = False
+        self._stop_event = threading.Event()
         self.logger = logging.getLogger(__name__)
     
     def start_polling(self, *args, **kwargs):
@@ -68,15 +68,54 @@ class CompatibleUpdater:
     
     def stop(self):
         self._running = False
+        self._stop_event.set()
     
     def is_running(self):
         return self._running
 
 
-# Reemplazar Updater con la versión compatible
-tele_ext.Updater = CompatibleUpdater
+# Reemplazar la clase Updater
+tele_ext.Updater = Py314Updater
 
-# Ahora importar el resto de telegram
+# Parche 2: Solucionar posibles problemas con Application
+from telegram.ext import _applicationbuilder as app_builder
+
+if hasattr(app_builder, 'ApplicationBuilder'):
+    original_build = app_builder.ApplicationBuilder.build
+    
+    def patched_build(self):
+        """Build con parche para Python 3.14.3"""
+        # Crear bot
+        bot = self._bot
+        if bot is None:
+            from telegram import Bot
+            bot = Bot(token=self._token, base_url=self._base_url, base_file_url=self._base_file_url)
+        
+        # Crear updater con nuestra clase parchada
+        from telegram.ext import Updater
+        updater = Updater(bot=bot, update_queue=self._update_queue)
+        
+        # Crear application
+        from telegram.ext import Application
+        app = Application(
+            bot=bot,
+            update_queue=self._update_queue,
+            updater=updater,
+            job_queue=self._job_queue,
+            post_init=self._post_init,
+            post_shutdown=self._post_shutdown,
+            context_types=self._context_types,
+        )
+        
+        # Agregar handlers
+        for handler, group in self._handlers:
+            app.add_handler(handler, group)
+        
+        return app
+    
+    app_builder.ApplicationBuilder.build = patched_build
+
+# Ahora importar todo lo demás
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -239,7 +278,7 @@ db = DB(DB_FILE)
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
 _active_futures: Dict[int, concurrent.futures.Future] = {}
 _futures_lock = threading.Lock()
-_event_loop: asyncio.AbstractEventLoop = None
+_loop: asyncio.AbstractEventLoop = None
 
 
 def run_create_account_isolated(user_id: int) -> dict:
@@ -309,7 +348,7 @@ def count_cookies(cookie_string: str) -> int:
     return len([c for c in cookie_string.split(";") if c.strip() and "=" in c])
 
 
-def split_text(text: str, max_len: int = 4000) -> list[str]:
+def split_text(text: str, max_len: int = 4000) -> List[str]:
     """Divide texto en partes seguras para Telegram"""
     if not text:
         return []
@@ -340,27 +379,33 @@ async def send_success_message(app, user_id: int, phone: str, password: str, nam
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     
-    await app.bot.send_message(user_id, header, parse_mode=ParseMode.HTML, reply_markup=build_main_menu())
-    
-    # Enviar cookies
-    safe_cookies = html.escape(cookies)
-    if len(safe_cookies) > 4000:
-        chunks = split_text(safe_cookies, 3500)
-        for idx, chunk in enumerate(chunks, 1):
-            msg = f"🍪 <b>Cookies ({idx}/{len(chunks)}):</b>\n\n<code>{chunk}</code>"
-            await app.bot.send_message(user_id, msg, parse_mode=ParseMode.HTML)
-    else:
-        await app.bot.send_message(user_id, f"🍪 <b>Cookies:</b>\n\n<code>{safe_cookies}</code>", parse_mode=ParseMode.HTML)
+    try:
+        await app.bot.send_message(user_id, header, parse_mode=ParseMode.HTML, reply_markup=build_main_menu())
+        
+        # Enviar cookies
+        safe_cookies = html.escape(cookies)
+        if len(safe_cookies) > 4000:
+            chunks = split_text(safe_cookies, 3500)
+            for idx, chunk in enumerate(chunks, 1):
+                msg = f"🍪 <b>Cookies ({idx}/{len(chunks)}):</b>\n\n<code>{chunk}</code>"
+                await app.bot.send_message(user_id, msg, parse_mode=ParseMode.HTML)
+        else:
+            await app.bot.send_message(user_id, f"🍪 <b>Cookies:</b>\n\n<code>{safe_cookies}</code>", parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Error enviando mensaje a {user_id}: {e}")
 
 
 async def send_error_message(app, user_id: int, error_msg: str, credits_restored: int):
     """Envía mensaje de error"""
-    await app.bot.send_message(
-        user_id,
-        f"❌ <b>Error al generar</b>\n\n<code>{html.escape(error_msg[:300])}</code>\n\n💳 Créditos devueltos: <b>{credits_restored}</b>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=build_main_menu(),
-    )
+    try:
+        await app.bot.send_message(
+            user_id,
+            f"❌ <b>Error al generar</b>\n\n<code>{html.escape(error_msg[:300])}</code>\n\n💳 Créditos devueltos: <b>{credits_restored}</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=build_main_menu(),
+        )
+    except Exception as e:
+        logger.error(f"Error enviando error a {user_id}: {e}")
 
 
 # =============================================================================
@@ -399,7 +444,8 @@ async def cmd_creditos(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db.upsert_user(user.id, user.username, user.first_name)
     credits = db.get_credits(user.id)
-    gen = db.get_user(user.id).get("total_generated", 0) if db.get_user(user.id) else 0
+    user_data = db.get_user(user.id)
+    gen = user_data.get("total_generated", 0) if user_data else 0
 
     text = (
         f"💰 <b>Tus créditos</b>\n\n"
@@ -458,7 +504,11 @@ async def cmd_dar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     
     target_arg = args[0].lstrip("@")
-    amount = int(args[1])
+    try:
+        amount = int(args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Cantidad inválida.")
+        return
     
     target = db.find_user_by_username(target_arg)
     if not target:
@@ -481,7 +531,11 @@ async def cmd_quitar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     
     target_arg = args[0].lstrip("@")
-    amount = int(args[1])
+    try:
+        amount = int(args[1])
+    except ValueError:
+        await update.message.reply_text("❌ Cantidad inválida.")
+        return
     
     target = db.find_user_by_username(target_arg)
     if not target:
@@ -543,13 +597,18 @@ async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = query.from_user
     data = query.data
-    await query.answer()
+    
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
     db.upsert_user(user.id, user.username, user.first_name)
 
     if data == "menu_creditos":
         credits = db.get_credits(user.id)
-        gen = db.get_user(user.id).get("total_generated", 0) if db.get_user(user.id) else 0
+        user_data = db.get_user(user.id)
+        gen = user_data.get("total_generated", 0) if user_data else 0
         text = f"💰 <b>Tus créditos</b>\n\nBalance: <b>{credits}</b>\n{credits_bar(credits)}\n\n🔄 Generaciones: {gen}\n💰 Costo: {CREDITS_PER_GEN}"
         await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=build_main_menu())
     
@@ -568,12 +627,19 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = query.from_user
     data = query.data
-    await query.answer()
+    
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
     if ":" in data:
         action, uid_str = data.rsplit(":", 1)
         if uid_str.isdigit() and int(uid_str) != user.id:
-            await query.answer("⚠️ No es tuyo", show_alert=True)
+            try:
+                await query.answer("⚠️ No es tuyo", show_alert=True)
+            except Exception:
+                pass
             return
     else:
         action = data
@@ -618,7 +684,6 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
     app = ctx.application
-    loop = asyncio.get_running_loop()
     future = _executor.submit(run_create_account_isolated, user.id)
     
     with _futures_lock:
@@ -637,29 +702,38 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 
                 db.record_gen(user.id, user.username or "", phone, name)
                 
-                asyncio.run_coroutine_threadsafe(
-                    send_success_message(app, user.id, phone, password, name, cookies, elapsed),
-                    loop
+                # Crear nuevo loop para enviar mensaje
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                new_loop.run_until_complete(
+                    send_success_message(app, user.id, phone, password, name, cookies, elapsed)
                 )
+                new_loop.close()
             else:
                 db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
                 credits_restored = db.get_credits(user.id)
-                asyncio.run_coroutine_threadsafe(
-                    send_error_message(app, user.id, result["error"], credits_restored),
-                    loop
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                new_loop.run_until_complete(
+                    send_error_message(app, user.id, result["error"], credits_restored)
                 )
+                new_loop.close()
         except concurrent.futures.TimeoutError:
             db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
-            asyncio.run_coroutine_threadsafe(
-                send_error_message(app, user.id, "Timeout excedido", db.get_credits(user.id)),
-                loop
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            new_loop.run_until_complete(
+                send_error_message(app, user.id, "Timeout excedido", db.get_credits(user.id))
             )
+            new_loop.close()
         except Exception as e:
             db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
-            asyncio.run_coroutine_threadsafe(
-                send_error_message(app, user.id, str(e), db.get_credits(user.id)),
-                loop
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            new_loop.run_until_complete(
+                send_error_message(app, user.id, str(e), db.get_credits(user.id))
             )
+            new_loop.close()
         finally:
             with _futures_lock:
                 _active_futures.pop(user.id, None)
@@ -672,8 +746,6 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # =============================================================================
 
 def main():
-    global _event_loop
-    
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN no configurado.")
         sys.exit(1)
