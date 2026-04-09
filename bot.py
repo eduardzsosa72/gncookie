@@ -74,7 +74,6 @@ def start_health_server():
                 self.end_headers()
         
         def log_message(self, format, *args):
-            # Suprimir logs del servidor HTTP
             return
     
     try:
@@ -680,7 +679,6 @@ async def cmd_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"💳 Tus créditos: <b>{credits}</b>\n"
         f"💰 Costo: <b>{CREDITS_PER_GEN}</b>\n"
         f"💳 Quedarás con: <b>{credits - CREDITS_PER_GEN}</b>\n\n"
-        f"⚠️ El proceso tarda <b>2-4 minutos</b>\n"
         f"¿Confirmas?",
         parse_mode=ParseMode.HTML,
         reply_markup=build_confirm_menu(user.id),
@@ -752,7 +750,6 @@ async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"💳 Tus créditos: <b>{credits}</b>\n"
                 f"💰 Costo: <b>{CREDITS_PER_GEN}</b>\n"
                 f"💳 Quedarás con: <b>{credits - CREDITS_PER_GEN}</b>\n\n"
-                f"⚠️ El proceso tarda 2-4 minutos.\n"
                 f"¿Confirmas?"
             ),
             parse_mode=ParseMode.HTML,
@@ -822,7 +819,7 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"⏳ <b>Generando cuenta Amazon...</b>\n\n"
         f"💰 Créditos descontados: <b>{CREDITS_PER_GEN}</b>\n"
         f"💳 Balance restante: <b>{credits_left}</b>\n\n"
-        f"✅ Te notificaré cuando termine (2-4 minutos)",
+        f"✅ Te notificaré cuando termine.",
         parse_mode=ParseMode.HTML,
     )
 
@@ -878,7 +875,7 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
             credits_restored = db.get_credits(user.id)
             asyncio.run_coroutine_threadsafe(
-                send_gen_error_async(app, user.id, "Timeout de 5 minutos excedido", credits_restored),
+                send_gen_error_async(app, user.id, "Timeout excedido", credits_restored),
                 loop
             )
             
