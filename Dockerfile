@@ -2,17 +2,20 @@ FROM python:3.14-rc-slim
 
 WORKDIR /app
 
-# Evita problemas de buffer
 ENV PYTHONUNBUFFERED=1
+ENV PORT=8080
 
-# Instalar dependencias
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libxml2-dev \
+    libxslt1-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar todo el proyecto
 COPY . .
-
-# Puerto para Railway
-ENV PORT=8080
 
 CMD ["python", "bot.py"]
