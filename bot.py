@@ -27,6 +27,7 @@ import concurrent.futures
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -44,7 +45,8 @@ ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().
 CREDITS_PER_GEN = int(os.getenv("CREDITS_PER_GEN", "15"))
 DB_FILE = os.getenv("DB_FILE", "bot_db.json")
 ADMIN_DISPLAY_NAME = os.getenv("ADMIN_DISPLAY_NAME", "BILLY")
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
+PORT = int(os.getenv("PORT", "8080"))
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
@@ -52,6 +54,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger("amzbot")
 
+
+# =============================================================================
+# HEALTH CHECK SERVER (para Railway)
+# =============================================================================
+
+def start_health_server():
+    """Servidor HTTP simple para health checks de Railway"""
+    
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/" or self.path == "/health":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(b"OK")
+            else:
+                self.send_response(404)
+                self.end_headers()
+        
+        def log_message(self, format, *args):
+            # Suprimir logs del servidor HTTP
+            return
+    
+    try:
+        server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+        logger.info(f"✅ Health server escuchando en 0.0.0.0:{PORT}")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"Health server error: {e}")
+
+
+# =============================================================================
+# BASE DE DATOS
+# =============================================================================
 
 class DB:
     _lock = threading.Lock()
@@ -174,7 +210,7 @@ db = DB(DB_FILE)
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
 _active_futures: dict[int, concurrent.futures.Future] = {}
 _futures_lock = threading.Lock()
-_event_loop: asyncio.AbstractEventLoop = None  # Se asignará en main()
+_event_loop: asyncio.AbstractEventLoop = None
 
 
 def run_create_account_isolated(user_id: int) -> dict:
@@ -185,13 +221,9 @@ def run_create_account_isolated(user_id: int) -> dict:
     try:
         import main as main_module
         
-        # Crear instancia DEDICADA para este usuario
         creator = main_module.AmazonCreator()
-        
-        # Ejecutar creación
         result = creator.create_account()
         
-        # Validar resultado
         if isinstance(result, dict) and "phone" in result:
             return result
         else:
@@ -203,7 +235,6 @@ def run_create_account_isolated(user_id: int) -> dict:
 
 
 def get_active_generations_count() -> int:
-    """Obtiene cuántas generaciones están activas actualmente"""
     with _futures_lock:
         active = 0
         for future in _active_futures.values():
@@ -250,22 +281,16 @@ def build_confirm_menu(user_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-def split_text(text: str, max_len: int = 3500) -> list[str]:
-    if not text:
-        return []
-    return [text[i:i + max_len] for i in range(0, len(text), max_len)]
-
-
 def count_cookies(cookie_string: str) -> int:
     return len([c for c in cookie_string.split(";") if c.strip() and "=" in c])
 
 
 # =============================================================================
-# FUNCIONES DE ENVÍO (asíncronas, llamadas desde hilos con run_coroutine_threadsafe)
+# FUNCIONES DE ENVÍO (asíncronas)
 # =============================================================================
 
 async def send_gen_success_async(app, user_id: int, phone: str, password: str, name: str, cookies: str, cookie_count: int, elapsed: float):
-    """Versión asíncrona para enviar mensajes"""
+    """Envía las cookies COMPLETAS en un solo mensaje"""
     safe_phone = html.escape(phone)
     safe_password = html.escape(password)
     safe_name = html.escape(name)
@@ -280,9 +305,10 @@ async def send_gen_success_async(app, user_id: int, phone: str, password: str, n
         f"🌍 <b>País:</b> USA\n"
         f"🍪 <b>Cookies:</b> {cookie_count}\n"
         f"⏱ <b>Tiempo:</b> <code>{elapsed:.2f} segundos</code>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📋 <i>Las cookies están en el siguiente mensaje:</i>"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
+    
+    cookie_msg = f"🍪 <b>COOKIES COMPLETAS:</b>\n\n<code>{safe_cookies}</code>"
     
     try:
         await app.bot.send_message(
@@ -292,25 +318,23 @@ async def send_gen_success_async(app, user_id: int, phone: str, password: str, n
             reply_markup=build_main_menu(),
         )
         
-        # Enviar cookies
-        if safe_cookies:
-            chunks = split_text(safe_cookies, 3500)
+        if len(cookie_msg) > 4096:
+            chunks = [safe_cookies[i:i+3500] for i in range(0, len(safe_cookies), 3500)]
             for idx, chunk in enumerate(chunks, start=1):
-                if len(chunks) == 1:
-                    cookie_msg = f"🍪 <b>Cookies:</b>\n\n<code>{chunk}</code>"
-                else:
-                    cookie_msg = f"🍪 <b>Cookies ({idx}/{len(chunks)})</b>\n\n<code>{chunk}</code>"
-                
-                await app.bot.send_message(user_id, cookie_msg, parse_mode=ParseMode.HTML)
+                await app.bot.send_message(
+                    user_id,
+                    f"🍪 <b>Cookies ({idx}/{len(chunks)}):</b>\n\n<code>{chunk}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
         else:
-            await app.bot.send_message(user_id, "⚠️ No se recibieron cookies.", parse_mode=ParseMode.HTML)
+            await app.bot.send_message(user_id, cookie_msg, parse_mode=ParseMode.HTML)
             
     except Exception as e:
-        logger.error(f"Error enviando mensaje de éxito a {user_id}: {e}")
+        logger.error(f"Error enviando mensaje a {user_id}: {e}")
 
 
 async def send_gen_error_async(app, user_id: int, error_msg: str, credits_restored: int):
-    """Versión asíncrona para enviar error"""
+    """Envía mensaje de error"""
     try:
         await app.bot.send_message(
             user_id,
@@ -318,17 +342,15 @@ async def send_gen_error_async(app, user_id: int, error_msg: str, credits_restor
             f"<code>{html.escape(error_msg[:300])}</code>\n\n"
             f"💳 <b>Tus créditos han sido devueltos</b>\n"
             f"Balance actual: <b>{credits_restored}</b>\n\n"
-            f"🔄 Intenta nuevamente con /gen\n"
-            f"Si el error persiste, contacta al administrador.",
+            f"🔄 Intenta nuevamente con /gen",
             parse_mode=ParseMode.HTML,
             reply_markup=build_main_menu(),
         )
     except Exception as e:
-        logger.error(f"Error enviando mensaje de error a {user_id}: {e}")
+        logger.error(f"Error enviando error a {user_id}: {e}")
 
 
 async def notify_admin_success_async(app, admin_id: int, user, phone: str, name: str, cookie_count: int, elapsed: float):
-    """Notifica a admin sobre generación exitosa"""
     username_tag = f"@{user.username}" if user.username else f"ID:{user.id}"
     try:
         await app.bot.send_message(
@@ -347,7 +369,6 @@ async def notify_admin_success_async(app, admin_id: int, user, phone: str, name:
 
 
 async def notify_admin_error_async(app, admin_id: int, user, error_msg: str):
-    """Notifica a admin sobre error en generación"""
     username_tag = f"@{user.username}" if user.username else f"ID:{user.id}"
     try:
         await app.bot.send_message(
@@ -616,24 +637,20 @@ async def cmd_usuarios(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # =============================================================================
 
 async def cmd_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Comando /gen - Inicia generación de cuenta"""
     user = update.effective_user
     db.upsert_user(user.id, user.username, user.first_name)
     
-    # Verificar si ya tiene una generación activa
     with _futures_lock:
         existing_future = _active_futures.get(user.id)
         if existing_future and not existing_future.done():
             await update.message.reply_text(
                 "⏳ <b>Ya tienes una generación en curso</b>\n\n"
-                "Por favor espera a que termine antes de iniciar otra.\n"
-                "El proceso puede tomar 2-4 minutos.",
+                "Por favor espera a que termine.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=build_main_menu(),
             )
             return
     
-    # Verificar créditos
     credits = db.get_credits(user.id)
     if credits < CREDITS_PER_GEN:
         needed = CREDITS_PER_GEN - credits
@@ -641,44 +658,36 @@ async def cmd_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"❌ <b>Créditos insuficientes</b>\n\n"
             f"💳 Tienes: <b>{credits}</b>\n"
             f"💰 Necesitas: <b>{CREDITS_PER_GEN}</b>\n"
-            f"📉 Faltan: <b>{needed}</b>\n\n"
-            f"Contacta con el administrador para obtener más créditos.",
+            f"📉 Faltan: <b>{needed}</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=build_main_menu(),
         )
         return
     
-    # Verificar si hay espacio en el pool
     active_gens = get_active_generations_count()
     if active_gens >= MAX_WORKERS:
         await update.message.reply_text(
             f"⏳ <b>Sistema ocupado</b>\n\n"
             f"Actualmente hay <b>{active_gens}/{MAX_WORKERS}</b> generaciones en curso.\n"
-            f"Por favor espera unos minutos e intenta nuevamente.\n\n"
-            f"💳 Tus créditos: <b>{credits}</b>",
+            f"Por favor espera.",
             parse_mode=ParseMode.HTML,
             reply_markup=build_main_menu(),
         )
         return
     
-    # Mostrar confirmación
     await update.message.reply_text(
         f"🛒 <b>Generar cuenta Amazon</b>\n\n"
         f"💳 Tus créditos: <b>{credits}</b>\n"
         f"💰 Costo: <b>{CREDITS_PER_GEN}</b>\n"
         f"💳 Quedarás con: <b>{credits - CREDITS_PER_GEN}</b>\n\n"
-        f"⚠️ <b>Importante:</b>\n"
-        f"• El proceso tarda <b>2-4 minutos</b>\n"
-        f"• Capacidad actual: <b>{active_gens + 1}/{MAX_WORKERS}</b>\n"
-        f"• Recibirás las cookies cuando termine\n\n"
-        f"¿Confirmas la generación?",
+        f"⚠️ El proceso tarda <b>2-4 minutos</b>\n"
+        f"¿Confirmas?",
         parse_mode=ParseMode.HTML,
         reply_markup=build_confirm_menu(user.id),
     )
 
 
 async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Callback para menú principal"""
     query = update.callback_query
     user = query.from_user
     data = query.data
@@ -710,13 +719,11 @@ async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         credits = db.get_credits(user.id)
         active_gens = get_active_generations_count()
 
-        # Verificar si ya tiene generación activa
         with _futures_lock:
             existing_future = _active_futures.get(user.id)
             if existing_future and not existing_future.done():
                 await query.edit_message_text(
-                    "⏳ <b>Ya tienes una generación en curso</b>\n\n"
-                    "Por favor espera a que termine.",
+                    "⏳ Ya tienes una generación en curso.",
                     parse_mode=ParseMode.HTML,
                     reply_markup=build_main_menu(),
                 )
@@ -725,12 +732,7 @@ async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if credits < CREDITS_PER_GEN:
             needed = CREDITS_PER_GEN - credits
             await query.edit_message_text(
-                text=(
-                    f"❌ <b>Créditos insuficientes</b>\n\n"
-                    f"💳 Tienes: <b>{credits}</b> créditos\n"
-                    f"💰 Necesitas: <b>{CREDITS_PER_GEN}</b> créditos\n"
-                    f"📉 Faltan: <b>{needed}</b>"
-                ),
+                text=f"❌ Créditos insuficientes. Faltan {needed}.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=build_main_menu(),
             )
@@ -738,12 +740,7 @@ async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         if active_gens >= MAX_WORKERS:
             await query.edit_message_text(
-                text=(
-                    f"⏳ <b>Sistema ocupado</b>\n\n"
-                    f"Actualmente hay <b>{active_gens}/{MAX_WORKERS}</b> generaciones en curso.\n"
-                    f"Por favor espera unos minutos e intenta nuevamente.\n\n"
-                    f"💳 Tus créditos: <b>{credits}</b>"
-                ),
+                text=f"⏳ Sistema ocupado ({active_gens}/{MAX_WORKERS}). Intenta más tarde.",
                 parse_mode=ParseMode.HTML,
                 reply_markup=build_main_menu(),
             )
@@ -755,8 +752,7 @@ async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 f"💳 Tus créditos: <b>{credits}</b>\n"
                 f"💰 Costo: <b>{CREDITS_PER_GEN}</b>\n"
                 f"💳 Quedarás con: <b>{credits - CREDITS_PER_GEN}</b>\n\n"
-                f"⚠️ El proceso tarda <b>2-4 minutos</b>\n"
-                f"Capacidad: <b>{active_gens + 1}/{MAX_WORKERS}</b>\n\n"
+                f"⚠️ El proceso tarda 2-4 minutos.\n"
                 f"¿Confirmas?"
             ),
             parse_mode=ParseMode.HTML,
@@ -766,13 +762,11 @@ async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Callback para confirmar/cancelar generación"""
     query = update.callback_query
     user = query.from_user
     data = query.data
     await query.answer()
 
-    # Validar que el botón pertenece al usuario
     if ":" in data:
         action, uid_str = data.rsplit(":", 1)
         if uid_str.isdigit() and int(uid_str) != user.id:
@@ -783,8 +777,7 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if action == "gen_cancel":
         await query.edit_message_text(
-            "❌ Generación cancelada.\n\n"
-            "Puedes intentar nuevamente cuando quieras.",
+            "❌ Generación cancelada.",
             reply_markup=build_main_menu(),
         )
         return
@@ -792,16 +785,14 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action != "gen_confirm":
         return
 
-    # Verificar créditos nuevamente (podrían haber cambiado)
     credits = db.get_credits(user.id)
     if credits < CREDITS_PER_GEN:
         await query.edit_message_text(
-            f"❌ Ya no tienes suficientes créditos ({credits}).",
+            f"❌ Créditos insuficientes.",
             reply_markup=build_main_menu(),
         )
         return
 
-    # Verificar si ya tiene una generación activa
     with _futures_lock:
         if user.id in _active_futures and not _active_futures[user.id].done():
             await query.edit_message_text(
@@ -810,16 +801,14 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-    # Verificar capacidad del pool
     active_gens = get_active_generations_count()
     if active_gens >= MAX_WORKERS:
         await query.edit_message_text(
-            f"⏳ Sistema lleno ({active_gens}/{MAX_WORKERS}). Intenta más tarde.",
+            f"⏳ Sistema lleno ({active_gens}/{MAX_WORKERS}).",
             reply_markup=build_main_menu(),
         )
         return
 
-    # Descontar créditos
     if not db.deduct_credits(user.id, CREDITS_PER_GEN):
         await query.edit_message_text(
             "❌ Error al descontar créditos.",
@@ -829,32 +818,25 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     credits_left = db.get_credits(user.id)
 
-    # Mensaje de inicio
     await query.edit_message_text(
         f"⏳ <b>Generando cuenta Amazon...</b>\n\n"
         f"💰 Créditos descontados: <b>{CREDITS_PER_GEN}</b>\n"
         f"💳 Balance restante: <b>{credits_left}</b>\n\n"
-        f"🔄 Generaciones activas: <b>{active_gens + 1}/{MAX_WORKERS}</b>\n\n"
-        f"✅ <b>El proceso ha comenzado</b>\n"
-        f"📱 Te notificaré cuando termine (2-4 minutos)\n"
-        f"🔔 <i>No cierres esta conversación</i>",
+        f"✅ Te notificaré cuando termine (2-4 minutos)",
         parse_mode=ParseMode.HTML,
     )
 
-    # Guardar referencias
     app = ctx.application
     loop = _event_loop
 
-    # Ejecutar generación en el ThreadPoolExecutor
     future = _executor.submit(run_create_account_isolated, user.id)
     
     with _futures_lock:
         _active_futures[user.id] = future
 
-    # Función para procesar el resultado en segundo plano
     def check_result():
         try:
-            result = future.result(timeout=300)  # 5 minutos timeout
+            result = future.result(timeout=300)
             
             if "error" not in result:
                 phone = result.get("phone", "")
@@ -862,19 +844,15 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 name = result.get("name", "")
                 cookies = result.get("cookies", "")
                 elapsed = result.get("elapsed", 0)
-                
                 cookie_count = count_cookies(cookies)
                 
-                # Guardar en DB
                 db.record_gen(user.id, user.username or "", phone, name)
                 
-                # Enviar resultado al usuario (usando asyncio.run_coroutine_threadsafe)
                 asyncio.run_coroutine_threadsafe(
                     send_gen_success_async(app, user.id, phone, password, name, cookies, cookie_count, elapsed),
                     loop
                 )
                 
-                # Notificar a admins
                 for admin_id in ADMIN_IDS:
                     asyncio.run_coroutine_threadsafe(
                         notify_admin_success_async(app, admin_id, user, phone, name, cookie_count, elapsed),
@@ -882,7 +860,6 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                     )
                     
             else:
-                # Devolver créditos en caso de error
                 db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
                 credits_restored = db.get_credits(user.id)
                 
@@ -917,7 +894,6 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             with _futures_lock:
                 _active_futures.pop(user.id, None)
 
-    # Ejecutar callback en hilo separado
     threading.Thread(target=check_result, daemon=True).start()
 
 
@@ -943,12 +919,16 @@ def main():
     print(f"   ├─ ADMIN_IDS:       {ADMIN_IDS}")
     print(f"   ├─ CREDITS_PER_GEN: {CREDITS_PER_GEN}")
     print(f"   ├─ MAX_WORKERS:     {MAX_WORKERS}")
+    print(f"   ├─ PORT:            {PORT}")
     print(f"   └─ DB_FILE:         {DB_FILE}")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("✅ Bot corriendo. Presiona Ctrl+C para detener.")
-    print()
 
-    # Crear y guardar el event loop para usarlo desde los hilos
+    # Iniciar servidor de health check en un hilo separado
+    health_thread = threading.Thread(target=start_health_server, daemon=True)
+    health_thread.start()
+    print("✅ Health server iniciado")
+
+    # Crear event loop
     _event_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_event_loop)
     
@@ -969,6 +949,7 @@ def main():
     app.add_handler(CallbackQueryHandler(callback_menu, pattern="^menu_"))
     app.add_handler(CallbackQueryHandler(callback_gen, pattern="^gen_"))
 
+    print("✅ Bot iniciado correctamente. Esperando mensajes...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
@@ -982,6 +963,7 @@ if __name__ == "__main__":
     CREDITS_PER_GEN = int(os.getenv("CREDITS_PER_GEN", "15"))
     DB_FILE = os.getenv("DB_FILE", "bot_db.json")
     ADMIN_DISPLAY_NAME = os.getenv("ADMIN_DISPLAY_NAME", "BILLY")
-    MAX_WORKERS = int(os.getenv("MAX_WORKERS", "3"))
+    MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
+    PORT = int(os.getenv("PORT", "8080"))
     
     main()
