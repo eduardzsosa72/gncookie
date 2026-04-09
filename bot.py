@@ -1,12 +1,23 @@
 """
 Amazon Cookie Gen — Bot de Telegram
 Compatible con Python 3.14.3
+Usando Aiogram 3.x
 =====================================
+Comandos:
+  /start             — Bienvenida e info
+  /gen               — Generar cuenta Amazon
+  /creditos          — Ver tus créditos
+  /help              — Ayuda
+
+Solo Admin:
+  /dar @usuario N    — Dar créditos
+  /quitar @usuario N — Quitar créditos
+  /stats             — Estadísticas
+  /usuarios          — Listar usuarios
 """
 
 import os
 import sys
-import re
 import json
 import time
 import html
@@ -16,8 +27,11 @@ import threading
 import concurrent.futures
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from dotenv import load_dotenv
+load_dotenv()
 
 # Configuración de logging
 logging.basicConfig(
@@ -39,91 +53,18 @@ MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
 PORT = int(os.getenv("PORT", "8080"))
 
 # =============================================================================
-# PARCHES PARA PYTHON 3.14.3
+# IMPORTAR AIOGRAM
 # =============================================================================
 
-# Parche 1: Solucionar el problema de __polling_cleanup_cb
-import telegram.ext as tele_ext
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
 
-# Guardar referencia original
-_original_updater_class = tele_ext.Updater if hasattr(tele_ext, 'Updater') else None
-
-# Crear clase Updater compatible con Python 3.14.3
-class Py314Updater:
-    """Updater compatible con Python 3.14.3"""
-    
-    __slots__ = ('bot', 'update_queue', '_polling_cleanup_cb', '_running', 'logger', '_stop_event')
-    
-    def __init__(self, bot=None, update_queue=None, **kwargs):
-        self.bot = bot
-        self.update_queue = update_queue
-        self._polling_cleanup_cb = None
-        self._running = False
-        self._stop_event = threading.Event()
-        self.logger = logging.getLogger(__name__)
-    
-    def start_polling(self, *args, **kwargs):
-        self._running = True
-        return self
-    
-    def stop(self):
-        self._running = False
-        self._stop_event.set()
-    
-    def is_running(self):
-        return self._running
-
-
-# Reemplazar la clase Updater
-tele_ext.Updater = Py314Updater
-
-# Parche 2: Solucionar posibles problemas con Application
-from telegram.ext import _applicationbuilder as app_builder
-
-if hasattr(app_builder, 'ApplicationBuilder'):
-    original_build = app_builder.ApplicationBuilder.build
-    
-    def patched_build(self):
-        """Build con parche para Python 3.14.3"""
-        # Crear bot
-        bot = self._bot
-        if bot is None:
-            from telegram import Bot
-            bot = Bot(token=self._token, base_url=self._base_url, base_file_url=self._base_file_url)
-        
-        # Crear updater con nuestra clase parchada
-        from telegram.ext import Updater
-        updater = Updater(bot=bot, update_queue=self._update_queue)
-        
-        # Crear application
-        from telegram.ext import Application
-        app = Application(
-            bot=bot,
-            update_queue=self._update_queue,
-            updater=updater,
-            job_queue=self._job_queue,
-            post_init=self._post_init,
-            post_shutdown=self._post_shutdown,
-            context_types=self._context_types,
-        )
-        
-        # Agregar handlers
-        for handler, group in self._handlers:
-            app.add_handler(handler, group)
-        
-        return app
-    
-    app_builder.ApplicationBuilder.build = patched_build
-
-# Ahora importar todo lo demás
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    CallbackQueryHandler,
-)
-from telegram.constants import ParseMode
+# Crear bot y dispatcher
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher()
 
 # =============================================================================
 # HEALTH CHECK SERVER
@@ -278,14 +219,10 @@ db = DB(DB_FILE)
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS)
 _active_futures: Dict[int, concurrent.futures.Future] = {}
 _futures_lock = threading.Lock()
-_loop: asyncio.AbstractEventLoop = None
 
 
 def run_create_account_isolated(user_id: int) -> dict:
-    """
-    Ejecuta create_account() de main.py de forma AISLADA.
-    Cada llamada crea su propia instancia de AmazonCreator.
-    """
+    """Ejecuta create_account de forma aislada"""
     try:
         import main as main_module
         
@@ -326,40 +263,43 @@ def credits_bar(credits: int, max_credits: int = 100) -> str:
     return f"[{bar}] {credits}"
 
 
-def build_main_menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🛒 AMAZON", callback_data="menu_amazon")],
-        [InlineKeyboardButton("💰 MIS créditos", callback_data="menu_creditos")],
-    ])
-
-
-def build_confirm_menu(user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Confirmar", callback_data=f"gen_confirm:{user_id}"),
-            InlineKeyboardButton("❌ Cancelar", callback_data=f"gen_cancel:{user_id}"),
-        ]
-    ])
-
-
 def count_cookies(cookie_string: str) -> int:
     if not cookie_string:
         return 0
     return len([c for c in cookie_string.split(";") if c.strip() and "=" in c])
 
 
-def split_text(text: str, max_len: int = 4000) -> List[str]:
-    """Divide texto en partes seguras para Telegram"""
+def split_text(text: str, max_len: int = 4000) -> list:
     if not text:
         return []
     return [text[i:i + max_len] for i in range(0, len(text), max_len)]
 
 
 # =============================================================================
+# TECLADOS
+# =============================================================================
+
+def get_main_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛒 AMAZON", callback_data="menu_amazon")],
+        [InlineKeyboardButton(text="💰 MIS CRÉDITOS", callback_data="menu_creditos")],
+    ])
+
+
+def get_confirm_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Confirmar", callback_data=f"gen_confirm:{user_id}"),
+            InlineKeyboardButton(text="❌ Cancelar", callback_data=f"gen_cancel:{user_id}"),
+        ]
+    ])
+
+
+# =============================================================================
 # FUNCIONES DE ENVÍO
 # =============================================================================
 
-async def send_success_message(app, user_id: int, phone: str, password: str, name: str, cookies: str, elapsed: float):
+async def send_success_message(chat_id: int, phone: str, password: str, name: str, cookies: str, elapsed: float):
     """Envía mensaje de éxito"""
     safe_phone = html.escape(phone)
     safe_password = html.escape(password)
@@ -368,7 +308,7 @@ async def send_success_message(app, user_id: int, phone: str, password: str, nam
     cookie_count = count_cookies(cookies)
     
     header = (
-        f"⚡ <b>✅ CUENTA GENERADA</b> ⚡\n"
+        f"⚡ <b>✅ CUENTA GENERADA EXITOSAMENTE</b> ⚡\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📞 <b>Teléfono:</b> <code>{safe_phone}</code>\n"
         f"🔑 <b>Contraseña:</b> <code>{safe_password}</code>\n"
@@ -379,47 +319,44 @@ async def send_success_message(app, user_id: int, phone: str, password: str, nam
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     
-    try:
-        await app.bot.send_message(user_id, header, parse_mode=ParseMode.HTML, reply_markup=build_main_menu())
-        
-        # Enviar cookies
-        safe_cookies = html.escape(cookies)
-        if len(safe_cookies) > 4000:
-            chunks = split_text(safe_cookies, 3500)
-            for idx, chunk in enumerate(chunks, 1):
-                msg = f"🍪 <b>Cookies ({idx}/{len(chunks)}):</b>\n\n<code>{chunk}</code>"
-                await app.bot.send_message(user_id, msg, parse_mode=ParseMode.HTML)
-        else:
-            await app.bot.send_message(user_id, f"🍪 <b>Cookies:</b>\n\n<code>{safe_cookies}</code>", parse_mode=ParseMode.HTML)
-    except Exception as e:
-        logger.error(f"Error enviando mensaje a {user_id}: {e}")
+    await bot.send_message(chat_id, header, reply_markup=get_main_keyboard())
+    
+    # Enviar cookies
+    safe_cookies = html.escape(cookies)
+    if len(safe_cookies) > 4000:
+        chunks = split_text(safe_cookies, 3500)
+        for idx, chunk in enumerate(chunks, 1):
+            msg = f"🍪 <b>Cookies ({idx}/{len(chunks)}):</b>\n\n<code>{chunk}</code>"
+            await bot.send_message(chat_id, msg)
+    else:
+        await bot.send_message(chat_id, f"🍪 <b>Cookies:</b>\n\n<code>{safe_cookies}</code>")
 
 
-async def send_error_message(app, user_id: int, error_msg: str, credits_restored: int):
+async def send_error_message(chat_id: int, error_msg: str, credits_restored: int):
     """Envía mensaje de error"""
-    try:
-        await app.bot.send_message(
-            user_id,
-            f"❌ <b>Error al generar</b>\n\n<code>{html.escape(error_msg[:300])}</code>\n\n💳 Créditos devueltos: <b>{credits_restored}</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=build_main_menu(),
-        )
-    except Exception as e:
-        logger.error(f"Error enviando error a {user_id}: {e}")
+    await bot.send_message(
+        chat_id,
+        f"❌ <b>Error al generar la cuenta</b>\n\n"
+        f"<code>{html.escape(error_msg[:300])}</code>\n\n"
+        f"💳 <b>Tus créditos han sido devueltos</b>\n"
+        f"Balance actual: <b>{credits_restored}</b>",
+        reply_markup=get_main_keyboard()
+    )
 
 
 # =============================================================================
 # MANEJADORES DE COMANDOS
 # =============================================================================
 
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    db.upsert_user(user.id, user.username, user.first_name)
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    user = message.from_user
+    db.upsert_user(user.id, user.username or "", user.first_name or "")
     credits = db.get_credits(user.id)
     active_gens = get_active_generations_count()
 
     if is_admin(user.id):
-        welcome = f"👑 Bienvenido Admin <b>{html.escape(ADMIN_DISPLAY_NAME)}</b>"
+        welcome = f"👑 Bienvenido Administrador <b>{html.escape(ADMIN_DISPLAY_NAME)}</b>"
     else:
         welcome = f"👤 Bienvenido <b>{html.escape(user.first_name or 'Usuario')}</b>"
 
@@ -427,268 +364,338 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"⚡ <b>Cookie Gen Amazon</b> ⚡\n"
         f"━━━━━━━━━━━━━━━━━\n\n"
         f"{welcome}\n"
-        f"💰 Créditos: <b>{credits}</b>\n"
+        f"💰 Créditos disponibles: <b>{credits}</b>\n"
         f"🔄 Generaciones activas: <b>{active_gens}/{MAX_WORKERS}</b>\n\n"
         f"📋 Selecciona una opción:"
     )
     
-    await ctx.bot.send_message(
-        update.effective_chat.id,
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=build_main_menu(),
-    )
+    await message.answer(text, reply_markup=get_main_keyboard())
 
 
-async def cmd_creditos(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    db.upsert_user(user.id, user.username, user.first_name)
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    await cmd_start(message)
+
+
+@dp.message(Command("creditos"))
+async def cmd_creditos(message: types.Message):
+    user = message.from_user
+    db.upsert_user(user.id, user.username or "", user.first_name or "")
     credits = db.get_credits(user.id)
     user_data = db.get_user(user.id)
     gen = user_data.get("total_generated", 0) if user_data else 0
 
     text = (
         f"💰 <b>Tus créditos</b>\n\n"
-        f"Balance: <b>{credits}</b>\n"
+        f"Balance: <b>{credits}</b> créditos\n"
         f"{credits_bar(credits)}\n\n"
-        f"🔄 Generaciones: <b>{gen}</b>\n"
-        f"💰 Costo: <b>{CREDITS_PER_GEN}</b>\n"
-        f"🔮 Puedes generar: <b>{credits // CREDITS_PER_GEN}</b> veces"
+        f"🔄 Generaciones realizadas: <b>{gen}</b>\n"
+        f"💰 Costo por generación: <b>{CREDITS_PER_GEN}</b>\n"
+        f"🔮 Puedes generar: <b>{credits // CREDITS_PER_GEN}</b> veces más"
     )
     
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=build_main_menu())
+    await message.answer(text, reply_markup=get_main_keyboard())
 
 
-async def cmd_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    db.upsert_user(user.id, user.username, user.first_name)
+@dp.message(Command("gen"))
+async def cmd_gen(message: types.Message):
+    user = message.from_user
+    db.upsert_user(user.id, user.username or "", user.first_name or "")
     
     credits = db.get_credits(user.id)
     if credits < CREDITS_PER_GEN:
         needed = CREDITS_PER_GEN - credits
-        await update.message.reply_text(
-            f"❌ Créditos insuficientes. Faltan <b>{needed}</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=build_main_menu(),
+        await message.answer(
+            f"❌ <b>Créditos insuficientes</b>\n\n"
+            f"💳 Tienes: <b>{credits}</b>\n"
+            f"💰 Necesitas: <b>{CREDITS_PER_GEN}</b>\n"
+            f"📉 Faltan: <b>{needed}</b>",
+            reply_markup=get_main_keyboard()
         )
         return
     
     active_gens = get_active_generations_count()
     if active_gens >= MAX_WORKERS:
-        await update.message.reply_text(
-            f"⏳ Sistema ocupado ({active_gens}/{MAX_WORKERS}). Intenta más tarde.",
-            reply_markup=build_main_menu(),
+        await message.answer(
+            f"⏳ <b>Sistema ocupado</b>\n\n"
+            f"Actualmente hay <b>{active_gens}/{MAX_WORKERS}</b> generaciones en curso.\n"
+            f"Por favor espera.",
+            reply_markup=get_main_keyboard()
         )
         return
     
-    await update.message.reply_text(
+    await message.answer(
         f"🛒 <b>Generar cuenta Amazon</b>\n\n"
-        f"💳 Créditos: <b>{credits}</b>\n"
+        f"💳 Tus créditos: <b>{credits}</b>\n"
         f"💰 Costo: <b>{CREDITS_PER_GEN}</b>\n"
-        f"💳 Quedarás: <b>{credits - CREDITS_PER_GEN}</b>\n\n"
+        f"💳 Quedarás con: <b>{credits - CREDITS_PER_GEN}</b>\n\n"
         f"¿Confirmas?",
-        parse_mode=ParseMode.HTML,
-        reply_markup=build_confirm_menu(user.id),
+        reply_markup=get_confirm_keyboard(user.id)
     )
 
 
-async def cmd_dar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+@dp.message(Command("dar"))
+async def cmd_dar(message: types.Message):
+    user = message.from_user
+    
     if not is_admin(user.id):
-        await update.message.reply_text("⛔ Solo administradores.")
+        await message.answer("⛔ Solo administradores pueden dar créditos.")
         return
     
-    args = ctx.args
-    if len(args) < 2:
-        await update.message.reply_text("📝 Uso: /dar @usuario <cantidad>")
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("📝 Uso: /dar @usuario <cantidad>")
         return
     
-    target_arg = args[0].lstrip("@")
+    target_arg = args[1].lstrip("@")
     try:
-        amount = int(args[1])
+        amount = int(args[2])
     except ValueError:
-        await update.message.reply_text("❌ Cantidad inválida.")
+        await message.answer("❌ La cantidad debe ser un número.")
+        return
+    
+    if amount <= 0:
+        await message.answer("❌ La cantidad debe ser positiva.")
         return
     
     target = db.find_user_by_username(target_arg)
     if not target:
-        await update.message.reply_text(f"❌ Usuario {target_arg} no encontrado.")
+        await message.answer(f"❌ Usuario <code>{html.escape(target_arg)}</code> no encontrado.")
         return
     
     new_balance = db.add_credits(target["id"], amount, user.id, "dar")
-    await update.message.reply_text(f"✅ {amount} créditos dados a {target['first_name']}. Nuevo balance: {new_balance}")
-
-
-async def cmd_quitar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not is_admin(user.id):
-        await update.message.reply_text("⛔ Solo administradores.")
-        return
+    username = f"@{target['username']}" if target.get("username") else f"ID:{target['id']}"
     
-    args = ctx.args
-    if len(args) < 2:
-        await update.message.reply_text("📝 Uso: /quitar @usuario <cantidad>")
-        return
+    await message.answer(
+        f"✅ <b>Créditos otorgados</b>\n\n"
+        f"👤 Usuario: <b>{html.escape(target['first_name'])}</b> ({html.escape(username)})\n"
+        f"➕ Agregados: <b>{amount}</b> créditos\n"
+        f"💳 Balance nuevo: <b>{new_balance}</b> créditos"
+    )
     
-    target_arg = args[0].lstrip("@")
+    # Notificar al usuario
     try:
-        amount = int(args[1])
+        await bot.send_message(
+            target["id"],
+            f"💰 <b>¡Recibiste créditos!</b>\n\n"
+            f"➕ <b>+{amount}</b> créditos\n"
+            f"💳 Tu balance: <b>{new_balance}</b>\n\n"
+            f"Usa /gen para generar una cuenta Amazon"
+        )
+    except Exception:
+        pass
+
+
+@dp.message(Command("quitar"))
+async def cmd_quitar(message: types.Message):
+    user = message.from_user
+    
+    if not is_admin(user.id):
+        await message.answer("⛔ Solo administradores pueden quitar créditos.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer("📝 Uso: /quitar @usuario <cantidad>")
+        return
+    
+    target_arg = args[1].lstrip("@")
+    try:
+        amount = int(args[2])
     except ValueError:
-        await update.message.reply_text("❌ Cantidad inválida.")
+        await message.answer("❌ La cantidad debe ser un número.")
+        return
+    
+    if amount <= 0:
+        await message.answer("❌ La cantidad debe ser positiva.")
         return
     
     target = db.find_user_by_username(target_arg)
     if not target:
-        await update.message.reply_text(f"❌ Usuario {target_arg} no encontrado.")
+        await message.answer(f"❌ Usuario <code>{html.escape(target_arg)}</code> no encontrado.")
         return
     
     new_balance = db.add_credits(target["id"], -amount, user.id, "quitar")
-    await update.message.reply_text(f"✅ {amount} créditos quitados a {target['first_name']}. Nuevo balance: {new_balance}")
+    username = f"@{target['username']}" if target.get("username") else f"ID:{target['id']}"
+    
+    await message.answer(
+        f"✅ <b>Créditos removidos</b>\n\n"
+        f"👤 Usuario: <b>{html.escape(target['first_name'])}</b> ({html.escape(username)})\n"
+        f"➖ Removidos: <b>{amount}</b> créditos\n"
+        f"💳 Balance nuevo: <b>{new_balance}</b> créditos"
+    )
 
 
-async def cmd_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ Solo administradores.")
+@dp.message(Command("stats"))
+async def cmd_stats(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Solo administradores.")
         return
     
     s = db.get_stats()
     active_gens = get_active_generations_count()
     
     text = (
-        f"📊 <b>Estadísticas</b>\n\n"
-        f"👥 Usuarios: <b>{s['total_users']}</b>\n"
-        f"🔄 Generaciones: <b>{s['total_generated']}</b>\n"
-        f"💳 Créditos: <b>{s['total_credits']}</b>\n"
+        f"📊 <b>Estadísticas del Bot</b>\n\n"
+        f"👥 Usuarios registrados: <b>{s['total_users']}</b>\n"
+        f"✅ Usuarios activos: <b>{s['active_users']}</b>\n"
+        f"🔄 Total generaciones: <b>{s['total_generated']}</b>\n"
+        f"💳 Créditos en circulación: <b>{s['total_credits']}</b>\n"
         f"━━━━━━━━━━━━━━━━━\n"
-        f"⚙️ Max workers: <b>{MAX_WORKERS}</b>\n"
-        f"🔄 Activas: <b>{active_gens}</b>\n"
-        f"💰 Costo: <b>{CREDITS_PER_GEN}</b>"
+        f"⚙️ Generaciones simultáneas máx: <b>{MAX_WORKERS}</b>\n"
+        f"🔄 Generaciones activas ahora: <b>{active_gens}</b>\n"
+        f"💰 Costo por generación: <b>{CREDITS_PER_GEN}</b>"
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await message.answer(text)
 
 
-async def cmd_usuarios(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("⛔ Solo administradores.")
+@dp.message(Command("usuarios"))
+async def cmd_usuarios(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Solo administradores.")
         return
     
     users = db.get_all_users()
     if not users:
-        await update.message.reply_text("📭 No hay usuarios.")
+        await message.answer("📭 No hay usuarios registrados.")
         return
     
     users.sort(key=lambda u: u.get("credits", 0), reverse=True)
     
-    lines = ["👥 <b>Usuarios</b>\n"]
-    for u in users[:20]:
-        name = html.escape(u.get("first_name", "?"))
-        credits = u.get("credits", 0)
-        gen = u.get("total_generated", 0)
-        lines.append(f"• {name} - 💳 {credits} | 🔄 {gen}")
+    lines = ["👥 <b>Usuarios registrados</b>\n"]
+    for u in users[:30]:
+        username = f"@{u['username']}" if u.get("username") else f"ID:{u['id']}"
+        lines.append(
+            f"• <b>{html.escape(u['first_name'])}</b> ({html.escape(username)})\n"
+            f"  💳 {u.get('credits', 0)} créditos | 🔄 {u.get('total_generated', 0)} gens"
+        )
     
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    if len(users) > 30:
+        lines.append(f"\n... y {len(users) - 30} más")
+    
+    await message.answer("\n".join(lines))
 
 
 # =============================================================================
 # CALLBACKS
 # =============================================================================
 
-async def callback_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = query.from_user
-    data = query.data
+@dp.callback_query(lambda c: c.data.startswith("menu_"))
+async def callback_menu(callback: CallbackQuery):
+    user = callback.from_user
+    data = callback.data
     
-    try:
-        await query.answer()
-    except Exception:
-        pass
-
-    db.upsert_user(user.id, user.username, user.first_name)
-
+    await callback.answer()
+    
+    db.upsert_user(user.id, user.username or "", user.first_name or "")
+    
     if data == "menu_creditos":
         credits = db.get_credits(user.id)
         user_data = db.get_user(user.id)
         gen = user_data.get("total_generated", 0) if user_data else 0
-        text = f"💰 <b>Tus créditos</b>\n\nBalance: <b>{credits}</b>\n{credits_bar(credits)}\n\n🔄 Generaciones: {gen}\n💰 Costo: {CREDITS_PER_GEN}"
-        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=build_main_menu())
+        
+        text = (
+            f"💰 <b>Tus créditos</b>\n\n"
+            f"Balance: <b>{credits}</b> créditos\n"
+            f"{credits_bar(credits)}\n\n"
+            f"🔄 Generaciones realizadas: <b>{gen}</b>\n"
+            f"💰 Costo por generación: <b>{CREDITS_PER_GEN}</b>\n"
+            f"🔮 Puedes generar: <b>{credits // CREDITS_PER_GEN}</b> veces más"
+        )
+        await callback.message.edit_text(text, reply_markup=get_main_keyboard())
     
     elif data == "menu_amazon":
         credits = db.get_credits(user.id)
+        active_gens = get_active_generations_count()
+        
         if credits < CREDITS_PER_GEN:
-            await query.edit_message_text(f"❌ Créditos insuficientes.", reply_markup=build_main_menu())
-        else:
-            await query.edit_message_text(
-                f"🛒 Generar cuenta\n💳 Créditos: {credits}\n💰 Costo: {CREDITS_PER_GEN}\n¿Confirmas?",
-                reply_markup=build_confirm_menu(user.id)
+            needed = CREDITS_PER_GEN - credits
+            await callback.message.edit_text(
+                f"❌ <b>Créditos insuficientes</b>\n\n"
+                f"💳 Tienes: <b>{credits}</b>\n"
+                f"💰 Necesitas: <b>{CREDITS_PER_GEN}</b>\n"
+                f"📉 Faltan: <b>{needed}</b>",
+                reply_markup=get_main_keyboard()
             )
+            return
+        
+        if active_gens >= MAX_WORKERS:
+            await callback.message.edit_text(
+                f"⏳ <b>Sistema ocupado</b>\n\n"
+                f"Actualmente hay <b>{active_gens}/{MAX_WORKERS}</b> generaciones en curso.",
+                reply_markup=get_main_keyboard()
+            )
+            return
+        
+        await callback.message.edit_text(
+            f"🛒 <b>Generar cuenta Amazon</b>\n\n"
+            f"💳 Tus créditos: <b>{credits}</b>\n"
+            f"💰 Costo: <b>{CREDITS_PER_GEN}</b>\n"
+            f"💳 Quedarás con: <b>{credits - CREDITS_PER_GEN}</b>\n\n"
+            f"¿Confirmas?",
+            reply_markup=get_confirm_keyboard(user.id)
+        )
 
 
-async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = query.from_user
-    data = query.data
+@dp.callback_query(lambda c: c.data.startswith("gen_"))
+async def callback_gen(callback: CallbackQuery):
+    user = callback.from_user
+    data = callback.data
     
-    try:
-        await query.answer()
-    except Exception:
-        pass
-
+    await callback.answer()
+    
     if ":" in data:
         action, uid_str = data.rsplit(":", 1)
         if uid_str.isdigit() and int(uid_str) != user.id:
-            try:
-                await query.answer("⚠️ No es tuyo", show_alert=True)
-            except Exception:
-                pass
+            await callback.answer("⚠️ Este botón no es tuyo.", show_alert=True)
             return
     else:
         action = data
-
+    
     if action == "gen_cancel":
-        await query.edit_message_text("❌ Cancelado.", reply_markup=build_main_menu())
+        await callback.message.edit_text("❌ Generación cancelada.", reply_markup=get_main_keyboard())
         return
-
+    
     if action != "gen_confirm":
         return
-
+    
     # Verificar créditos
     credits = db.get_credits(user.id)
     if credits < CREDITS_PER_GEN:
-        await query.edit_message_text("❌ Créditos insuficientes.", reply_markup=build_main_menu())
+        await callback.message.edit_text("❌ Créditos insuficientes.", reply_markup=get_main_keyboard())
         return
-
+    
     # Verificar si ya tiene generación activa
     with _futures_lock:
         if user.id in _active_futures and not _active_futures[user.id].done():
-            await query.edit_message_text("⏳ Ya tienes una generación en curso.", reply_markup=build_main_menu())
+            await callback.message.edit_text("⏳ Ya tienes una generación en curso.", reply_markup=get_main_keyboard())
             return
-
+    
     # Verificar capacidad
     if get_active_generations_count() >= MAX_WORKERS:
-        await query.edit_message_text("⏳ Sistema lleno.", reply_markup=build_main_menu())
+        await callback.message.edit_text("⏳ Sistema lleno. Intenta más tarde.", reply_markup=get_main_keyboard())
         return
-
+    
     # Descontar créditos
     if not db.deduct_credits(user.id, CREDITS_PER_GEN):
-        await query.edit_message_text("❌ Error al descontar.", reply_markup=build_main_menu())
+        await callback.message.edit_text("❌ Error al descontar créditos.", reply_markup=get_main_keyboard())
         return
-
+    
     credits_left = db.get_credits(user.id)
-
-    await query.edit_message_text(
-        f"⏳ <b>Generando cuenta...</b>\n\n"
-        f"💰 Descontados: {CREDITS_PER_GEN}\n"
-        f"💳 Balance: {credits_left}\n\n"
-        f"✅ Te aviso cuando termine.",
-        parse_mode=ParseMode.HTML,
+    
+    await callback.message.edit_text(
+        f"⏳ <b>Generando cuenta Amazon...</b>\n\n"
+        f"💰 Créditos descontados: <b>{CREDITS_PER_GEN}</b>\n"
+        f"💳 Balance restante: <b>{credits_left}</b>\n\n"
+        f"✅ Te notificaré cuando termine.",
     )
-
-    app = ctx.application
+    
+    # Ejecutar generación
     future = _executor.submit(run_create_account_isolated, user.id)
     
     with _futures_lock:
         _active_futures[user.id] = future
-
+    
     def check_result():
         try:
             result = future.result(timeout=300)
@@ -702,42 +709,56 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 
                 db.record_gen(user.id, user.username or "", phone, name)
                 
-                # Crear nuevo loop para enviar mensaje
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                new_loop.run_until_complete(
-                    send_success_message(app, user.id, phone, password, name, cookies, elapsed)
+                # Enviar resultado
+                asyncio.run_coroutine_threadsafe(
+                    send_success_message(user.id, phone, password, name, cookies, elapsed),
+                    asyncio.get_event_loop()
                 )
-                new_loop.close()
+                
+                # Notificar a admins
+                for admin_id in ADMIN_IDS:
+                    asyncio.run_coroutine_threadsafe(
+                        bot.send_message(
+                            admin_id,
+                            f"🔔 <b>Nueva generación exitosa</b>\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"👤 {html.escape(user.first_name or '')} (@{user.username or '?'})\n"
+                            f"📞 {html.escape(phone)}\n"
+                            f"👤 {html.escape(name)}\n"
+                            f"🍪 Cookies: {count_cookies(cookies)}\n"
+                            f"⏱ Tiempo: {elapsed:.2f}s"
+                        ),
+                        asyncio.get_event_loop()
+                    )
+                    
             else:
                 db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
                 credits_restored = db.get_credits(user.id)
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                new_loop.run_until_complete(
-                    send_error_message(app, user.id, result["error"], credits_restored)
+                asyncio.run_coroutine_threadsafe(
+                    send_error_message(user.id, result["error"], credits_restored),
+                    asyncio.get_event_loop()
                 )
-                new_loop.close()
+                
         except concurrent.futures.TimeoutError:
             db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
-            new_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(new_loop)
-            new_loop.run_until_complete(
-                send_error_message(app, user.id, "Timeout excedido", db.get_credits(user.id))
+            credits_restored = db.get_credits(user.id)
+            asyncio.run_coroutine_threadsafe(
+                send_error_message(user.id, "Timeout de 5 minutos excedido", credits_restored),
+                asyncio.get_event_loop()
             )
-            new_loop.close()
+            
         except Exception as e:
             db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
-            new_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(new_loop)
-            new_loop.run_until_complete(
-                send_error_message(app, user.id, str(e), db.get_credits(user.id))
+            credits_restored = db.get_credits(user.id)
+            asyncio.run_coroutine_threadsafe(
+                send_error_message(user.id, str(e), credits_restored),
+                asyncio.get_event_loop()
             )
-            new_loop.close()
+            
         finally:
             with _futures_lock:
                 _active_futures.pop(user.id, None)
-
+    
     threading.Thread(target=check_result, daemon=True).start()
 
 
@@ -745,11 +766,12 @@ async def callback_gen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # MAIN
 # =============================================================================
 
-def main():
+async def main():
+    """Función principal"""
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN no configurado.")
         sys.exit(1)
-
+    
     print("🤖 Iniciando bot de Amazon Cookie Gen...")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print(f"   📊 CONFIGURACIÓN:")
@@ -759,43 +781,21 @@ def main():
     print(f"   ├─ PORT:            {PORT}")
     print(f"   └─ DB_FILE:         {DB_FILE}")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
+    
     # Iniciar health server
     health_thread = threading.Thread(target=start_health_server, daemon=True)
     health_thread.start()
     print("✅ Health server iniciado")
-
-    # Crear aplicación
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # Comandos
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_start))
-    app.add_handler(CommandHandler("creditos", cmd_creditos))
-    app.add_handler(CommandHandler("gen", cmd_gen))
-    app.add_handler(CommandHandler("dar", cmd_dar))
-    app.add_handler(CommandHandler("quitar", cmd_quitar))
-    app.add_handler(CommandHandler("stats", cmd_stats))
-    app.add_handler(CommandHandler("usuarios", cmd_usuarios))
     
-    # Callbacks
-    app.add_handler(CallbackQueryHandler(callback_menu, pattern="^menu_"))
-    app.add_handler(CallbackQueryHandler(callback_gen, pattern="^gen_"))
-
+    # Iniciar bot
     print("✅ Bot iniciado correctamente. Esperando mensajes...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    await dp.start_polling(bot)
+
+
+def start():
+    """Punto de entrada para Railway"""
+    asyncio.run(main())
 
 
 if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv()
-    
-    BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-    ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip().isdigit()]
-    CREDITS_PER_GEN = int(os.getenv("CREDITS_PER_GEN", "15"))
-    DB_FILE = os.getenv("DB_FILE", "bot_db.json")
-    ADMIN_DISPLAY_NAME = os.getenv("ADMIN_DISPLAY_NAME", "BILLY")
-    MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
-    PORT = int(os.getenv("PORT", "8080"))
-    
-    main()
+    start()
