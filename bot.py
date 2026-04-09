@@ -40,6 +40,9 @@ ADMIN_DISPLAY_NAME = os.getenv("ADMIN_DISPLAY_NAME", "BILLY")
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "2"))
 PORT = int(os.getenv("PORT", "8080"))
 
+# Loop principal de asyncio para enviar mensajes desde hilos
+MAIN_LOOP = None
+
 # =============================================================================
 # IMPORTAR AIOGRAM
 # =============================================================================
@@ -69,10 +72,10 @@ def start_health_server():
             else:
                 self.send_response(404)
                 self.end_headers()
-        
+
         def log_message(self, format, *args):
             return
-    
+
     try:
         server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
         logger.info(f"✅ Health server escuchando en 0.0.0.0:{PORT}")
@@ -277,17 +280,16 @@ def get_confirm_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 
 # =============================================================================
-# FUNCIONES DE ENVÍO (versiones síncronas para usar en hilos)
+# FUNCIONES DE ENVÍO ASÍNCRONAS
 # =============================================================================
 
-def send_success_message_sync(chat_id: int, phone: str, password: str, name: str, cookies: str, elapsed: float):
-    """Versión síncrona para usar desde hilos - CORREGIDA"""
+async def send_success_message_async(chat_id: int, phone: str, password: str, name: str, cookies: str, elapsed: float):
     safe_phone = html.escape(phone)
     safe_password = html.escape(password)
     safe_name = html.escape(name)
-    
+
     cookie_count = count_cookies(cookies)
-    
+
     header = (
         f"⚡ <b>✅ CUENTA GENERADA EXITOSAMENTE</b> ⚡\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -299,68 +301,41 @@ def send_success_message_sync(chat_id: int, phone: str, password: str, name: str
         f"⏱ <b>Tiempo:</b> <code>{elapsed:.2f}s</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
-    
-    # Crear un nuevo event loop para este hilo
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    try:
-        loop.run_until_complete(bot.send_message(chat_id, header, reply_markup=get_main_keyboard()))
-        
-        safe_cookies = html.escape(cookies)
-        if len(safe_cookies) > 4000:
-            chunks = split_text(safe_cookies, 3500)
-            for idx, chunk in enumerate(chunks, 1):
-                msg = f"🍪 <b>Cookies ({idx}/{len(chunks)}):</b>\n\n<code>{chunk}</code>"
-                loop.run_until_complete(bot.send_message(chat_id, msg))
-        else:
-            loop.run_until_complete(bot.send_message(chat_id, f"🍪 <b>Cookies:</b>\n\n<code>{safe_cookies}</code>"))
-    except Exception as e:
-        logger.error(f"Error enviando mensaje de éxito: {e}")
-    finally:
-        loop.close()
+
+    await bot.send_message(chat_id, header, reply_markup=get_main_keyboard())
+
+    safe_cookies = html.escape(cookies)
+    if len(safe_cookies) > 4000:
+        chunks = split_text(safe_cookies, 3500)
+        for idx, chunk in enumerate(chunks, 1):
+            msg = f"🍪 <b>Cookies ({idx}/{len(chunks)}):</b>\n\n<code>{chunk}</code>"
+            await bot.send_message(chat_id, msg)
+    else:
+        await bot.send_message(chat_id, f"🍪 <b>Cookies:</b>\n\n<code>{safe_cookies}</code>")
 
 
-def send_error_message_sync(chat_id: int, error_msg: str, credits_restored: int):
-    """Versión síncrona para usar desde hilos"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    try:
-        loop.run_until_complete(bot.send_message(
-            chat_id,
-            f"❌ <b>Error al generar la cuenta</b>\n\n"
-            f"<code>{html.escape(error_msg[:300])}</code>\n\n"
-            f"💳 <b>Tus créditos han sido devueltos</b>\n"
-            f"Balance actual: <b>{credits_restored}</b>",
-            reply_markup=get_main_keyboard()
-        ))
-    except Exception as e:
-        logger.error(f"Error enviando mensaje de error: {e}")
-    finally:
-        loop.close()
+async def send_error_message_async(chat_id: int, error_msg: str, credits_restored: int):
+    await bot.send_message(
+        chat_id,
+        f"❌ <b>Error al generar la cuenta</b>\n\n"
+        f"<code>{html.escape(error_msg[:300])}</code>\n\n"
+        f"💳 <b>Tus créditos han sido devueltos</b>\n"
+        f"Balance actual: <b>{credits_restored}</b>",
+        reply_markup=get_main_keyboard()
+    )
 
 
-def notify_admin_sync(admin_id: int, user, phone: str, name: str, cookie_count: int, elapsed: float):
-    """Notifica a admin desde hilo"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    try:
-        loop.run_until_complete(bot.send_message(
-            admin_id,
-            f"🔔 <b>Nueva generación exitosa</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"👤 {html.escape(user.first_name or '')} (@{user.username or '?'})\n"
-            f"📞 {html.escape(phone)}\n"
-            f"👤 {html.escape(name)}\n"
-            f"🍪 Cookies: {cookie_count}\n"
-            f"⏱ Tiempo: {elapsed:.2f}s"
-        ))
-    except Exception as e:
-        logger.error(f"Error notificando a admin: {e}")
-    finally:
-        loop.close()
+async def notify_admin_async(admin_id: int, user, phone: str, name: str, cookie_count: int, elapsed: float):
+    await bot.send_message(
+        admin_id,
+        f"🔔 <b>Nueva generación exitosa</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 {html.escape(user.first_name or '')} (@{user.username or '?'})\n"
+        f"📞 {html.escape(phone)}\n"
+        f"👤 {html.escape(name)}\n"
+        f"🍪 Cookies: {cookie_count}\n"
+        f"⏱ Tiempo: {elapsed:.2f}s"
+    )
 
 
 # =============================================================================
@@ -387,7 +362,7 @@ async def cmd_start(message: types.Message):
         f"🔄 Generaciones activas: <b>{active_gens}/{MAX_WORKERS}</b>\n\n"
         f"📋 Selecciona una opción:"
     )
-    
+
     await message.answer(text, reply_markup=get_main_keyboard())
 
 
@@ -412,7 +387,7 @@ async def cmd_creditos(message: types.Message):
         f"💰 Costo por generación: <b>{CREDITS_PER_GEN}</b>\n"
         f"🔮 Puedes generar: <b>{credits // CREDITS_PER_GEN}</b> veces más"
     )
-    
+
     await message.answer(text, reply_markup=get_main_keyboard())
 
 
@@ -420,7 +395,7 @@ async def cmd_creditos(message: types.Message):
 async def cmd_gen(message: types.Message):
     user = message.from_user
     db.upsert_user(user.id, user.username or "", user.first_name or "")
-    
+
     credits = db.get_credits(user.id)
     if credits < CREDITS_PER_GEN:
         needed = CREDITS_PER_GEN - credits
@@ -432,7 +407,7 @@ async def cmd_gen(message: types.Message):
             reply_markup=get_main_keyboard()
         )
         return
-    
+
     active_gens = get_active_generations_count()
     if active_gens >= MAX_WORKERS:
         await message.answer(
@@ -442,7 +417,7 @@ async def cmd_gen(message: types.Message):
             reply_markup=get_main_keyboard()
         )
         return
-    
+
     await message.answer(
         f"🛒 <b>Generar cuenta Amazon</b>\n\n"
         f"💳 Tus créditos: <b>{credits}</b>\n"
@@ -456,43 +431,42 @@ async def cmd_gen(message: types.Message):
 @dp.message(Command("dar"))
 async def cmd_dar(message: types.Message):
     user = message.from_user
-    
+
     if not is_admin(user.id):
         await message.answer("⛔ Solo administradores pueden dar créditos.")
         return
-    
+
     args = message.text.split()
     if len(args) < 3:
         await message.answer("📝 Uso: /dar @usuario <cantidad>")
         return
-    
+
     target_arg = args[1].lstrip("@")
     try:
         amount = int(args[2])
     except ValueError:
         await message.answer("❌ La cantidad debe ser un número.")
         return
-    
+
     if amount <= 0:
         await message.answer("❌ La cantidad debe ser positiva.")
         return
-    
+
     target = db.find_user_by_username(target_arg)
     if not target:
         await message.answer(f"❌ Usuario <code>{html.escape(target_arg)}</code> no encontrado.")
         return
-    
+
     new_balance = db.add_credits(target["id"], amount, user.id, "dar")
     username = f"@{target['username']}" if target.get("username") else f"ID:{target['id']}"
-    
+
     await message.answer(
         f"✅ <b>Créditos otorgados</b>\n\n"
         f"👤 Usuario: <b>{html.escape(target['first_name'])}</b> ({html.escape(username)})\n"
         f"➕ Agregados: <b>{amount}</b> créditos\n"
         f"💳 Balance nuevo: <b>{new_balance}</b> créditos"
     )
-    
-    # Notificar al usuario
+
     try:
         await bot.send_message(
             target["id"],
@@ -508,35 +482,35 @@ async def cmd_dar(message: types.Message):
 @dp.message(Command("quitar"))
 async def cmd_quitar(message: types.Message):
     user = message.from_user
-    
+
     if not is_admin(user.id):
         await message.answer("⛔ Solo administradores pueden quitar créditos.")
         return
-    
+
     args = message.text.split()
     if len(args) < 3:
         await message.answer("📝 Uso: /quitar @usuario <cantidad>")
         return
-    
+
     target_arg = args[1].lstrip("@")
     try:
         amount = int(args[2])
     except ValueError:
         await message.answer("❌ La cantidad debe ser un número.")
         return
-    
+
     if amount <= 0:
         await message.answer("❌ La cantidad debe ser positiva.")
         return
-    
+
     target = db.find_user_by_username(target_arg)
     if not target:
         await message.answer(f"❌ Usuario <code>{html.escape(target_arg)}</code> no encontrado.")
         return
-    
+
     new_balance = db.add_credits(target["id"], -amount, user.id, "quitar")
     username = f"@{target['username']}" if target.get("username") else f"ID:{target['id']}"
-    
+
     await message.answer(
         f"✅ <b>Créditos removidos</b>\n\n"
         f"👤 Usuario: <b>{html.escape(target['first_name'])}</b> ({html.escape(username)})\n"
@@ -550,10 +524,10 @@ async def cmd_stats(message: types.Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Solo administradores.")
         return
-    
+
     s = db.get_stats()
     active_gens = get_active_generations_count()
-    
+
     text = (
         f"📊 <b>Estadísticas del Bot</b>\n\n"
         f"👥 Usuarios registrados: <b>{s['total_users']}</b>\n"
@@ -573,14 +547,14 @@ async def cmd_usuarios(message: types.Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Solo administradores.")
         return
-    
+
     users = db.get_all_users()
     if not users:
         await message.answer("📭 No hay usuarios registrados.")
         return
-    
+
     users.sort(key=lambda u: u.get("credits", 0), reverse=True)
-    
+
     lines = ["👥 <b>Usuarios registrados</b>\n"]
     for u in users[:30]:
         username = f"@{u['username']}" if u.get("username") else f"ID:{u['id']}"
@@ -588,10 +562,10 @@ async def cmd_usuarios(message: types.Message):
             f"• <b>{html.escape(u['first_name'])}</b> ({html.escape(username)})\n"
             f"  💳 {u.get('credits', 0)} créditos | 🔄 {u.get('total_generated', 0)} gens"
         )
-    
+
     if len(users) > 30:
         lines.append(f"\n... y {len(users) - 30} más")
-    
+
     await message.answer("\n".join(lines))
 
 
@@ -603,16 +577,16 @@ async def cmd_usuarios(message: types.Message):
 async def callback_menu(callback: CallbackQuery):
     user = callback.from_user
     data = callback.data
-    
+
     await callback.answer()
-    
+
     db.upsert_user(user.id, user.username or "", user.first_name or "")
-    
+
     if data == "menu_creditos":
         credits = db.get_credits(user.id)
         user_data = db.get_user(user.id)
         gen = user_data.get("total_generated", 0) if user_data else 0
-        
+
         text = (
             f"💰 <b>Tus créditos</b>\n\n"
             f"Balance: <b>{credits}</b> créditos\n"
@@ -622,11 +596,11 @@ async def callback_menu(callback: CallbackQuery):
             f"🔮 Puedes generar: <b>{credits // CREDITS_PER_GEN}</b> veces más"
         )
         await callback.message.edit_text(text, reply_markup=get_main_keyboard())
-    
+
     elif data == "menu_amazon":
         credits = db.get_credits(user.id)
         active_gens = get_active_generations_count()
-        
+
         if credits < CREDITS_PER_GEN:
             needed = CREDITS_PER_GEN - credits
             await callback.message.edit_text(
@@ -637,7 +611,7 @@ async def callback_menu(callback: CallbackQuery):
                 reply_markup=get_main_keyboard()
             )
             return
-        
+
         if active_gens >= MAX_WORKERS:
             await callback.message.edit_text(
                 f"⏳ <b>Sistema ocupado</b>\n\n"
@@ -645,7 +619,7 @@ async def callback_menu(callback: CallbackQuery):
                 reply_markup=get_main_keyboard()
             )
             return
-        
+
         await callback.message.edit_text(
             f"🛒 <b>Generar cuenta Amazon</b>\n\n"
             f"💳 Tus créditos: <b>{credits}</b>\n"
@@ -660,9 +634,9 @@ async def callback_menu(callback: CallbackQuery):
 async def callback_gen(callback: CallbackQuery):
     user = callback.from_user
     data = callback.data
-    
+
     await callback.answer()
-    
+
     if ":" in data:
         action, uid_str = data.rsplit(":", 1)
         if uid_str.isdigit() and int(uid_str) != user.id:
@@ -670,91 +644,106 @@ async def callback_gen(callback: CallbackQuery):
             return
     else:
         action = data
-    
+
     if action == "gen_cancel":
         await callback.message.edit_text("❌ Generación cancelada.", reply_markup=get_main_keyboard())
         return
-    
+
     if action != "gen_confirm":
         return
-    
-    # Verificar créditos
+
     credits = db.get_credits(user.id)
     if credits < CREDITS_PER_GEN:
         await callback.message.edit_text("❌ Créditos insuficientes.", reply_markup=get_main_keyboard())
         return
-    
-    # Verificar si ya tiene generación activa
+
     with _futures_lock:
         if user.id in _active_futures and not _active_futures[user.id].done():
             await callback.message.edit_text("⏳ Ya tienes una generación en curso.", reply_markup=get_main_keyboard())
             return
-    
-    # Verificar capacidad
+
     if get_active_generations_count() >= MAX_WORKERS:
         await callback.message.edit_text("⏳ Sistema lleno. Intenta más tarde.", reply_markup=get_main_keyboard())
         return
-    
-    # Descontar créditos
+
     if not db.deduct_credits(user.id, CREDITS_PER_GEN):
         await callback.message.edit_text("❌ Error al descontar créditos.", reply_markup=get_main_keyboard())
         return
-    
+
     credits_left = db.get_credits(user.id)
-    
+
     await callback.message.edit_text(
         f"⏳ <b>Generando cuenta Amazon...</b>\n\n"
         f"💰 Créditos descontados: <b>{CREDITS_PER_GEN}</b>\n"
         f"💳 Balance restante: <b>{credits_left}</b>\n\n"
         f"✅ Te notificaré cuando termine.",
     )
-    
-    # Ejecutar generación
+
     future = _executor.submit(run_create_account_isolated, user.id)
-    
+
     with _futures_lock:
         _active_futures[user.id] = future
-    
+
     def check_result():
         try:
             result = future.result(timeout=300)
-            
+
             if "error" not in result:
                 phone = result.get("phone", "")
                 password = result.get("password", "")
                 name = result.get("name", "")
                 cookies = result.get("cookies", "")
                 elapsed = result.get("elapsed", 0)
-                
+
                 db.record_gen(user.id, user.username or "", phone, name)
                 cookie_count = count_cookies(cookies)
-                
-                # Enviar resultado usando función síncrona
-                send_success_message_sync(user.id, phone, password, name, cookies, elapsed)
-                
-                # Notificar a admins
+
+                asyncio.run_coroutine_threadsafe(
+                    send_success_message_async(user.id, phone, password, name, cookies, elapsed),
+                    MAIN_LOOP
+                ).result()
+
                 for admin_id in ADMIN_IDS:
-                    notify_admin_sync(admin_id, user, phone, name, cookie_count, elapsed)
-                    
+                    asyncio.run_coroutine_threadsafe(
+                        notify_admin_async(admin_id, user, phone, name, cookie_count, elapsed),
+                        MAIN_LOOP
+                    ).result()
+
             else:
                 db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
                 credits_restored = db.get_credits(user.id)
-                send_error_message_sync(user.id, result["error"], credits_restored)
-                
+
+                asyncio.run_coroutine_threadsafe(
+                    send_error_message_async(user.id, result["error"], credits_restored),
+                    MAIN_LOOP
+                ).result()
+
         except concurrent.futures.TimeoutError:
             db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
             credits_restored = db.get_credits(user.id)
-            send_error_message_sync(user.id, "Timeout de 5 minutos excedido", credits_restored)
-            
+
+            asyncio.run_coroutine_threadsafe(
+                send_error_message_async(user.id, "Timeout de 5 minutos excedido", credits_restored),
+                MAIN_LOOP
+            ).result()
+
         except Exception as e:
             db.add_credits(user.id, CREDITS_PER_GEN, 0, "refund")
             credits_restored = db.get_credits(user.id)
-            send_error_message_sync(user.id, str(e), credits_restored)
-            
+            logger.error(f"Error procesando resultado: {e}", exc_info=True)
+
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    send_error_message_async(user.id, str(e), credits_restored),
+                    MAIN_LOOP
+                ).result()
+            except Exception:
+                pass
+
         finally:
             with _futures_lock:
                 _active_futures.pop(user.id, None)
-    
+
     threading.Thread(target=check_result, daemon=True).start()
 
 
@@ -763,10 +752,13 @@ async def callback_gen(callback: CallbackQuery):
 # =============================================================================
 
 async def main():
+    global MAIN_LOOP
+    MAIN_LOOP = asyncio.get_running_loop()
+
     if not BOT_TOKEN:
         print("❌ BOT_TOKEN no configurado.")
         sys.exit(1)
-    
+
     print("🤖 Iniciando bot de Amazon Cookie Gen...")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print(f"   📊 CONFIGURACIÓN:")
@@ -776,13 +768,11 @@ async def main():
     print(f"   ├─ PORT:            {PORT}")
     print(f"   └─ DB_FILE:         {DB_FILE}")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    
-    # Iniciar health server
+
     health_thread = threading.Thread(target=start_health_server, daemon=True)
     health_thread.start()
     print("✅ Health server iniciado")
-    
-    # Iniciar bot
+
     print("✅ Bot iniciado correctamente. Esperando mensajes...")
     await dp.start_polling(bot)
 
