@@ -49,6 +49,10 @@ capsolver.api_key = os.getenv("CAPSOLVER_KEY")
 PROXY_URL = os.getenv("REQ_PROXY")
 
 
+def random_delay(min_sec=0.5, max_sec=2.0):
+    """Espera aleatoria para simular comportamiento humano"""
+    time.sleep(random.uniform(min_sec, max_sec))
+
 # =============================================================================
 # CLASE PRINCIPAL - CADA INSTANCIA ES COMPLETAMENTE INDEPENDIENTE
 # =============================================================================
@@ -81,11 +85,10 @@ class AmazonCreator:
     # =========================================================================
     
     def req(self, method, url, **kw):
-        """Petición HTTP con timeouts más altos y reintentos mejorados"""
-        kw.setdefault("timeout", 45)          # Aumentado a 45 segundos
-        max_retries = 3                       # Más reintentos
-        delays = [1, 2, 4]                    # Backoff exponencial
-
+        """Petición HTTP usando la sesión propia de esta instancia"""
+        kw.setdefault("timeout", 20)
+        max_retries = 2
+        
         for attempt in range(max_retries):
             try:
                 return self.session.request(method, url, **kw)
@@ -93,7 +96,7 @@ class AmazonCreator:
                 if attempt == max_retries - 1:
                     raise
                 self.logger.warning(f"Retry {attempt + 1}/{max_retries}: {e}")
-                time.sleep(delays[attempt])
+                time.sleep(0.5 * (attempt + 1))
     
     def find_between(self, data, first, last):
         s = data.find(first)
@@ -185,14 +188,10 @@ class AmazonCreator:
     
     def extract_all_cookies(self) -> tuple[str, dict]:
         """
-        Extraer TODAS las cookies del jar de la sesión actual.
-        Este método obtiene todas las cookies que el servidor ha enviado
-        durante todas las peticiones realizadas en la sesión.
+        Extrae TODAS las cookies del jar de la sesión actual.
         """
-        # Obtener todas las cookies del jar de la sesión
         jar = {}
         try:
-            # get_dict() sin parámetros devuelve TODAS las cookies del jar
             jar = self.session.cookies.get_dict(domain=None, path=None) or {}
         except Exception:
             try:
@@ -200,22 +199,17 @@ class AmazonCreator:
             except Exception:
                 jar = {}
         
-        # Procesar las cookies: añadir comillas dobles a session-token y x-main
         processed = {}
         for k, v in jar.items():
             if not k or not v:
                 continue
-            # Si la cookie ya tiene comillas, no duplicar
             if k in ("session-token", "x-main"):
                 inner = v.strip('"')
                 processed[k] = f'"{inner}"'
             else:
                 processed[k] = v
         
-        # Construir string de cookies sin espacios
         cookie_str = ";".join(f"{k}={v}" for k, v in processed.items())
-        
-        self.logger.info(f"  Cookies extraídas de la sesión: {len(processed)} ({list(processed.keys())})")
         return cookie_str, processed
     
     # =========================================================================
@@ -384,6 +378,7 @@ class AmazonCreator:
                 "openid.ns": "http://specs.openid.net/auth/2.0",
             },
         )
+        # self.save("step1_signin.html", r1.text)
         self.logger.info(f"  status={r1.status_code}")
         
         h1 = BeautifulSoup(r1.text, _PARSER)
@@ -430,6 +425,7 @@ class AmazonCreator:
                 "openid.ns": "http://specs.openid.net/auth/2.0",
             },
         )
+        # self.save("step2_register_form.html", r2.text)
         self.logger.info(f"  status={r2.status_code}")
         
         h2 = BeautifulSoup(r2.text, _PARSER)
@@ -508,6 +504,7 @@ class AmazonCreator:
                 "encryptedPasswordExpected": "",
             },
         )
+        # self.save("step3_post_register.html", r3.text)
         self.logger.info(f"  status={r3.status_code}  url={r3.url}")
         
         h3 = BeautifulSoup(r3.text, _PARSER)
@@ -584,6 +581,7 @@ class AmazonCreator:
             },
             params={"options": options4},
         )
+        # self.save("step4_aaut.html", r4.text)
         self.logger.info(f"  status={r4.status_code}")
         
         ctx4 = {}
@@ -649,6 +647,7 @@ class AmazonCreator:
                     "id": captcha_id,
                 },
             )
+            # self.save("step5_captcha_problem.html", r5.text)
             self.logger.info(f"  status={r5.status_code}")
             
             prob = r5.json()
@@ -723,6 +722,7 @@ class AmazonCreator:
                     "locale": "en-us",
                 },
             )
+            # self.save("step7_captcha_verify.html", r7.text)
             self.logger.info(f"  status={r7.status_code}")
             
             r7j = r7.json()
@@ -765,6 +765,7 @@ class AmazonCreator:
                 + '\\""}',
             },
         )
+        # self.save("step8_cvf_exchange.html", r8.text)
         self.logger.info(f"  status={r8.status_code}")
         
         ctx8 = {}
@@ -849,6 +850,7 @@ class AmazonCreator:
             data=post_data,
             allow_redirects=True,
         )
+        # self.save("step9_cvf_verify.html", r9.text)
         self.logger.info(f"  status={r9.status_code}  url={r9.url}")
         
         # =====================================================================
@@ -918,6 +920,7 @@ class AmazonCreator:
                 data=data,
                 allow_redirects=True,
             )
+            # self.save("step9_cvf_reclaim.html", r9.text)
             self.logger.info(f"  status={r9.status_code}  url={r9.url}")
         
         # =====================================================================
@@ -984,8 +987,8 @@ class AmazonCreator:
                 
                 self.logger.info(f"  OTP status={r_otp.status_code}  url={r_otp.url}")
                 
-                # Navegar a direcciónes (esto es opcional pero ayuda a establecer más cookies)
-                self.req(
+                # Navegar a direcciónes
+                r_otp = self.req(
                     "GET",
                     "https://www.amazon.com/a/addresses/add?ref=ya_address_book_add_post",
                     headers={
@@ -1005,51 +1008,161 @@ class AmazonCreator:
                     allow_redirects=True,
                 )
                 
-                # --- AHORA VISITAMOS /gp/css/home.html PARA FORZAR TODAS LAS COOKIES ---
-                self.logger.info("[12] Navegando a /gp/css/home.html para obtener todas las cookies...")
-                try:
-                    r_home = self.req(
-                        "GET",
-                        "https://www.amazon.com/gp/css/home.html",
-                        headers={
-                            "User-Agent": UA,
-                            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                            "Accept-Language": "en-US,en;q=0.9",
-                            "Referer": "https://www.amazon.com/",
-                            "Upgrade-Insecure-Requests": "1",
-                            "Sec-Fetch-Dest": "document",
-                            "Sec-Fetch-Mode": "navigate",
-                            "Sec-Fetch-Site": "same-origin",
-                            "Sec-Fetch-User": "?1",
-                            "Cache-Control": "no-cache",
-                            "Pragma": "no-cache",
-                        },
-                        timeout=30
-                    )
-                    self.logger.info(f"  HOME status={r_home.status_code}  url={r_home.url}")
-                except Exception as e:
-                    self.logger.warning(f"Error visitando /gp/css/home.html: {e}")
+                addresss = BeautifulSoup(r_otp.text, _PARSER)
+                csrf_token = self.bs_val(addresss, "csrfToken") or new_csrf
+                address_ui_widgets_previous_address_form_state_token = self.bs_val(
+                    addresss, "address-ui-widgets-previous-address-form-state-token"
+                )
+                address_ui_widgets_obfuscated_customerId = self.bs_val(
+                    addresss, "address-ui-widgets-obfuscated-customerId"
+                )
+                address_ui_widgets_csrfToken = self.bs_val(
+                    addresss, "address-ui-widgets-csrfToken"
+                )
+                address_ui_widgets_form_load_start_time = self.bs_val(
+                    addresss, "address-ui-widgets-form-load-start-time"
+                )
+                address_ui_widgets_clickstream_related_request_id = self.bs_val(
+                    addresss, "address-ui-widgets-clickstream-related-request-id"
+                )
+                address_ui_widgets_address_wizard_interaction_id = self.bs_val(
+                    addresss, "address-ui-widgets-address-wizard-interaction-id"
+                )
                 
-                # Extraer TODAS las cookies del jar de la sesión
-                cookie_str, cookies = self.extract_all_cookies()
-                
-                self.herosms_finish()
-                
-                elapsed_time = time.time() - start_time
-                
-                # Guardar en archivo cookies.txt
-                output_line = f"Phone:{self.phone}/Password:{self.password}/Name:{self.first_name} {self.last_name}/Cookies:{cookie_str}"
-                with open("cookies.txt", "a") as f:
-                    f.write(output_line + "\n\n")
-                print(output_line)
-                
-                return {
-                    "phone": self.phone,
-                    "password": self.password,
-                    "name": f"{self.first_name} {self.last_name}",
-                    "cookies": cookie_str,
-                    "elapsed": round(elapsed_time, 2)
+                headers = {
+                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "accept-language": "en-US,en;q=0.9",
+                    "cache-control": "no-cache",
+                    "content-type": "application/x-www-form-urlencoded",
+                    "device-memory": "8",
+                    "downlink": "10",
+                    "dpr": "1",
+                    "ect": "4g",
+                    "origin": "https://www.amazon.com",
+                    "pragma": "no-cache",
+                    "priority": "u=0, i",
+                    "referer": "https://www.amazon.com/a/addresses/add?ref=ya_address_book_add_post",
+                    "rtt": "250",
+                    "sec-ch-device-memory": "8",
+                    "sec-ch-dpr": "1",
+                    "sec-ch-viewport-width": "380",
+                    "sec-fetch-dest": "document",
+                    "sec-fetch-mode": "navigate",
+                    "sec-fetch-site": "same-origin",
+                    "sec-fetch-user": "?1",
+                    "upgrade-insecure-requests": "1",
+                    "user-agent": UA,
+                    "viewport-width": "380",
                 }
+                
+                params = {
+                    "ref": "ya_address_book_add_post",
+                }
+                
+                data = {
+                    "csrfToken": csrf_token,
+                    "addressID": "",
+                    "address-ui-widgets-countryCode": "US",
+                    "address-ui-widgets-enterAddressFullName": f"{self.first_name} {self.last_name}",
+                    "address-ui-widgets-enterAddressPhoneNumber": "+1" + self.phone,
+                    "address-ui-widgets-enterAddressLine1": "Street23",
+                    "address-ui-widgets-enterAddressLine2": "",
+                    "address-ui-widgets-enterAddressCity": "New York",
+                    "address-ui-widgets-enterAddressStateOrRegion": "NY",
+                    "address-ui-widgets-enterAddressPostalCode": "10081",
+                    "address-ui-widgets-urbanization": "",
+                    "address-ui-widgets-previous-address-form-state-token": address_ui_widgets_previous_address_form_state_token,
+                    "address-ui-widgets-use-as-my-default": "true",
+                    "address-ui-widgets-delivery-instructions-desktop-expander-context": '{"deliveryInstructionsDisplayMode" : "CDP_ONLY", "deliveryInstructionsClientName" : "YourAccountAddressBook", "deliveryInstructionsDeviceType" : "desktop", "deliveryInstructionsIsEditAddressFlow" : "false"}',
+                    "address-ui-widgets-addressFormButtonText": "save",
+                    "address-ui-widgets-addressFormHideHeading": "true",
+                    "address-ui-widgets-heading-string-id": "",
+                    "address-ui-widgets-addressFormHideSubmitButton": "false",
+                    "address-ui-widgets-enableAddressDetails": "true",
+                    "address-ui-widgets-returnLegacyAddressID": "false",
+                    "address-ui-widgets-enableDeliveryInstructions": "true",
+                    "address-ui-widgets-enableAddressWizardInlineSuggestions": "true",
+                    "address-ui-widgets-enableEmailAddress": "false",
+                    "address-ui-widgets-enableAddressTips": "true",
+                    "address-ui-widgets-amazonBusinessGroupId": "",
+                    "address-ui-widgets-clientName": "YourAccountAddressBook",
+                    "address-ui-widgets-enableAddressWizardForm": "true",
+                    "address-ui-widgets-delivery-instructions-data": '{"initialCountryCode":"US"}',
+                    "address-ui-widgets-ab-delivery-instructions-data": "",
+                    "address-ui-widgets-address-wizard-interaction-id": address_ui_widgets_address_wizard_interaction_id,
+                    "address-ui-widgets-obfuscated-customerId": address_ui_widgets_obfuscated_customerId,
+                    "address-ui-widgets-locationData": "",
+                    "address-ui-widgets-enableLatestAddressWizardForm": "false",
+                    "address-ui-widgets-avsSuppressSoftblock": "false",
+                    "address-ui-widgets-avsSuppressSuggestion": "false",
+                    "address-ui-widgets-csrfToken": address_ui_widgets_csrfToken,
+                    "address-ui-widgets-form-load-start-time": address_ui_widgets_form_load_start_time,
+                    "address-ui-widgets-clickstream-related-request-id": address_ui_widgets_clickstream_related_request_id,
+                    "address-ui-widgets-deliveryDestinationCity": "New&#32;York",
+                    "address-ui-widgets-deliveryDestinationNonUciPostalCode": "10022",
+                    "address-ui-widgets-autofill-location-spinner-loading-text": "Loading",
+                    "address-ui-widgets-locale": "",
+                }
+                
+                r_otp = self.req(
+                    "POST",
+                    "https://www.amazon.com/a/addresses/add?ref=ya_address_book_add_post",
+                    headers=headers,
+                    data=data,
+                    params=params,
+                )
+                
+                self.logger.info(f"  Amazon ADDRESS status={r_otp.status_code}  url={r_otp.url}")
+                
+                url_otp = r_otp.url
+                
+                if any(x in url_otp for x in _SUCCESS_URLS):
+                    self.logger.info("\n[OK] CUENTA CREADA EXITOSAMENTE")
+                    self.logger.info(f"  URL final: {url_otp}")
+                    
+                    # ================================================================
+                    # ESPERA ALEATORIA ANTES DE EXTRAER COOKIES
+                    # ================================================================
+                    random_delay(3, 6)
+                    
+                    self.logger.info("\n[12] Navegando a páginas autenticadas para recolectar todas las cookies...")
+                    
+                    # Lista de páginas a visitar para forzar el envío de todas las cookies
+                    pages = [
+                        "https://www.amazon.com/gp/css/home.html",
+                        "https://www.amazon.com/gp/yourstore/home",
+                        "https://www.amazon.com/gp/history",
+                        "https://www.amazon.com/gp/css/order-history",
+                    ]
+                    for page in pages:
+                        try:
+                            self.req("GET", page, headers={"User-Agent": UA}, timeout=30)
+                            self.logger.info(f"  Visitado: {page}")
+                            random_delay(0.5, 1.5)
+                        except Exception as e:
+                            self.logger.warning(f"  Error visitando {page}: {e}")
+                    
+                    # Extraer TODAS las cookies del jar de la sesión
+                    cookie_str, cookies = self.extract_all_cookies()
+                    self.logger.info(f"  Cookies extraídas: {len(cookies)} ({list(cookies.keys())})")
+                    
+                    self.herosms_finish()
+                    
+                    elapsed_time = time.time() - start_time
+                    
+                    return {
+                        "phone": self.phone,
+                        "password": self.password,
+                        "name": f"{self.first_name} {self.last_name}",
+                        "cookies": cookie_str,
+                        "elapsed": round(elapsed_time, 2)
+                    }
+                elif "otp" in url_otp.lower() or "verify" in url_otp.lower():
+                    self.logger.warning("\n[WARN] OTP incorrecto o expirado")
+                    raise Exception("Invalid OTP")
+                else:
+                    self.logger.warning(f"\n[WARN] URL inesperada post-OTP: {url_otp}")
+                    raise Exception(f"Unexpected URL after OTP: {url_otp}")
             else:
                 if not otp_code:
                     raise Exception("No OTP code received from HeroSMS")
@@ -1058,46 +1171,36 @@ class AmazonCreator:
                 if not form_action:
                     raise Exception("Form action not found")
         
-        # -- Caso 2: Exito directo (sin OTP, raro pero posible) --------------------
+        # -- Caso 2: Exito directo -------------------------------------------------
         elif any(x in url9 for x in _SUCCESS_URLS):
             self.logger.info("\n[OK] CUENTA CREADA EXITOSAMENTE")
             self.logger.info(f"  URL: {url9}")
             
-            # Navegar a /gp/css/home.html para forzar cookies
-            self.logger.info("[12] Navegando a /gp/css/home.html para obtener todas las cookies...")
-            try:
-                r_home = self.req(
-                    "GET",
-                    "https://www.amazon.com/gp/css/home.html",
-                    headers={
-                        "User-Agent": UA,
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                        "Accept-Language": "en-US,en;q=0.9",
-                        "Referer": "https://www.amazon.com/",
-                        "Upgrade-Insecure-Requests": "1",
-                        "Sec-Fetch-Dest": "document",
-                        "Sec-Fetch-Mode": "navigate",
-                        "Sec-Fetch-Site": "same-origin",
-                        "Sec-Fetch-User": "?1",
-                        "Cache-Control": "no-cache",
-                        "Pragma": "no-cache",
-                    },
-                    timeout=30
-                )
-                self.logger.info(f"  HOME status={r_home.status_code}  url={r_home.url}")
-            except Exception as e:
-                self.logger.warning(f"Error visitando /gp/css/home.html: {e}")
+            # Espera aleatoria
+            random_delay(3, 6)
+            
+            self.logger.info("\n[12] Navegando a páginas autenticadas para recolectar todas las cookies...")
+            
+            pages = [
+                "https://www.amazon.com/gp/css/home.html",
+                "https://www.amazon.com/gp/yourstore/home",
+                "https://www.amazon.com/gp/history",
+                "https://www.amazon.com/gp/css/order-history",
+            ]
+            for page in pages:
+                try:
+                    self.req("GET", page, headers={"User-Agent": UA}, timeout=30)
+                    self.logger.info(f"  Visitado: {page}")
+                    random_delay(0.5, 1.5)
+                except Exception as e:
+                    self.logger.warning(f"  Error visitando {page}: {e}")
             
             cookie_str, cookies = self.extract_all_cookies()
+            self.logger.info(f"  Cookies extraídas: {len(cookies)} ({list(cookies.keys())})")
             
             self.herosms_finish()
             
             elapsed_time = time.time() - start_time
-            
-            output_line = f"Phone:{self.phone}/Password:{self.password}/Name:{self.first_name} {self.last_name}/Cookies:{cookie_str}"
-            with open("cookies.txt", "a") as f:
-                f.write(output_line + "\n\n")
-            print(output_line)
             
             return {
                 "phone": self.phone,
