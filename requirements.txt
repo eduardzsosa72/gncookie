@@ -1,0 +1,10 @@
+python-telegram-bot==20.7
+curl_cffi==0.5.10
+capsolver==1.0.0
+structlog==24.1.0
+faker==25.8.0
+beautifulsoup4==4.12.3
+aiohttp==3.9.5
+python-dotenv==1.0.1
+urllib3==2.2.1
+lxml==5.2.2
