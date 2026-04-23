@@ -1,6 +1,6 @@
 python-telegram-bot==20.7
 curl_cffi>=0.7.1
-capsolver-python==1.0.7
+capsolver-python>=1.0.7
 structlog==24.1.0
 faker==25.8.0
 beautifulsoup4==4.12.3
