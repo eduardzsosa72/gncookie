@@ -1,0 +1,114 @@
+
+<!doctype html><html class="a-no-js" data-19ax5a9jf="dingo"><head><script>var aPageStart = (new Date()).getTime();</script><meta charset="utf-8"/><meta content="hIelSJjSxVrFnM/dZn+1mqvmh/bUvORG+wbyx+OQ0fSWAAAAAGnqcZ0AAAAB" name="csrf-token" />
+</head>
+<body class="a-m-us a-aui_72554-c a-aui_template_weblab_cache_333406-c"><div id="a-page"><script type="a-state" data-a-state="{&quot;key&quot;:&quot;a-wlab-states&quot;}">{}</script>
+<script>
+    function generateCustomerSupportPage(customerSupportLink, customer_support_verification_action, onClickCallback) {
+        // Only bind click event if bypass is enabled.
+        if (customerSupportLink.length) {
+            customerSupportLink.click((event) => {
+                event.preventDefault();
+                
+                // Execute optional callback for cleanup (e.g., PoW cancellation)
+                if (typeof onClickCallback === 'function') {
+                    onClickCallback();
+                }
+                
+                postChallengeEvent("aa-load-alternate-challenge", {
+                    challengeType: customer_support_verification_action
+                });
+            })
+        }
+        return false;
+    };
+</script>
+<script>
+    /**
+     * Posts a challenge event to the appropriate targets.
+     * 
+     * - If window === parent (div mode): posts to window only
+     * - If window !== parent (iframe mode): posts to both window and parent
+     * 
+     * @param {string} eventId - The event ID (e.g., "aa-challenge-loaded", "aa-challenge-complete")
+     * @param {object} [payload] - Optional payload to include with the event
+     */
+    function postChallengeEvent(eventId, payload) {
+        var message = payload 
+            ? JSON.stringify({ eventId: eventId, payload: payload })
+            : JSON.stringify({ eventId: eventId });
+        
+        // Always post to window
+        window.postMessage(message, "*");
+        
+        // Also post to parent if different (iframe mode)
+        if (window !== parent) {
+            parent.postMessage(message, "*");
+        }
+    }
+</script>
+
+<head><script>var aPageStart = (new Date()).getTime();</script><meta charset="utf-8"/>    <script src="https://ait.2608283a.us-east-1.captcha.awswaf.com/ait/ait/ait/captcha.js"></script>
+    <style>
+        .aacb-default-box-padding {
+            --top-bottom-padding: 20px;
+            --left-right-padding: 26px;
+            padding: var(--top-bottom-padding) var(--left-right-padding) !important;
+        }
+        .aacb-custom-box-padding {
+            --waf-captcha-modal-min-width: 180px;
+            --container-width: 100%;
+            --top-bottom-padding: 20px;
+            --left-right-padding: calc((var(--container-width) - var(--waf-captcha-modal-min-width)) / 2);
+            padding: var(--top-bottom-padding) var(--left-right-padding) !important;
+        }
+    </style>
+</head>
+<div class="a-section a-text-center"><div class="a-row a-spacing-none aacb-overflow-hidden"><div id="aacb-waf-box" class="a-box aacb-default-box-padding"><div class="a-box-inner a-padding-none">
+<div class="a-row a-spacing-mini">                <h1 id="aacb-captcha-header">
+Solve this puzzle to protect your account                </h1>
+</div>
+            <script>
+                P.when('A', 'ready').execute(function (A) {
+                    var $ = A.$;
+                    const container = document.querySelector("#captcha-container");
+                    const wafOnLoadProperty = {
+                        onLoad: () => {
+                            postChallengeEvent("aa-challenge-loaded");
+                        }
+                    };
+                    const wafInputProperties = Object.assign({"width":230,"skipInitialScreen":true,"dynamicWidth":true,"problem":"gridcaptcha-v2-5-0.1-0","visualSolutionsRequired":1,"skipTitle":true,"disableLanguageAutoSelection":true,"defaultLocale":"en-US","id":"eyJ1bmlxdWVWYWxpZGF0aW9uSWQiOiI5MmQ1NGUwNi1hOGYyLTQwMGQtODYxZS1lZDU1ODY0ZTA4NmUiLCJ0eXBlIjoiQkFTRTY0X0pTT04ifQ"}, wafOnLoadProperty);
+                    CaptchaScript.renderCaptcha(container, async (voucher) => {
+                        console.log("Captcha solved, voucher=" + voucher);
+                        postChallengeEvent("aa-challenge-complete", voucher);
+                    }, wafInputProperties);
+
+                    const customerSupportLink = $("#aa_waf_customer_support_link");
+                    generateCustomerSupportPage(customerSupportLink, 'AAMATION_CUSTOMER_SUPPORT_VERIFICATION_WAF_ADV_SYNTHETIC_GRID_V2_LEVEL_1');
+
+                    const wafCaptchaModalMinWidth = 180;
+                    const defaultLeftRightPadding = 26;
+                    const wafBox = document.querySelector("#aacb-waf-box");
+
+                    var enablePaddingResize = false;
+
+                    // Resize padding when present WAF on small screen
+                    window.addEventListener("resize", () => {
+                        if (!enablePaddingResize && container.offsetWidth < wafCaptchaModalMinWidth) {
+                            wafBox.classList.remove("aacb-default-box-padding");
+                            wafBox.classList.add("aacb-custom-box-padding");
+                            enablePaddingResize = true;
+                        } else if (enablePaddingResize && wafBox.offsetWidth > (wafCaptchaModalMinWidth + 2 * defaultLeftRightPadding)){
+                            wafBox.classList.remove("aacb-custom-box-padding");
+                            wafBox.classList.add("aacb-default-box-padding");
+                            enablePaddingResize = false;
+                        }
+                    });
+                });
+            </script>
+
+            <div id="captcha-container"></div>
+
+<div class="a-row a-spacing-mini"><div class="a-section a-text-left">                        <a class="a-link-normal" id="aa_waf_customer_support_link" href="#">
+Need help?                        </a>
+</div></div>
+</div></div></div></div></div></body></html>
