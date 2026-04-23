@@ -3,183 +3,246 @@ import json
 import os
 import logging
 import tempfile
-import signal
+import inspect
 from pathlib import Path
-from telegram import Update, Document
-from telegram.ext import Application, CommandHandler, ContextTypes
-import sys
 
-# Asegurar que podemos importar prime
-sys.path.append(os.path.dirname(__file__))
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+
+# Importar prime.py
 from prime import create
 
-# ========== CONFIGURACIÓN ==========
+# ================= CONFIG =================
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("No se encontró TELEGRAM_BOT_TOKEN en variables de entorno")
+    raise RuntimeError("Falta TELEGRAM_BOT_TOKEN en Railway Variables")
 
-ADMIN_USER_ID = 6319087504  # Tu ID de administrador
+ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "6319087504"))
+COST_GENERATE = int(os.getenv("COST_GENERATE", "10"))
 
-# Persistencia de créditos (Railway: usa /app/data si montas volumen)
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 os.makedirs(DATA_DIR, exist_ok=True)
+
 CREDITS_FILE = Path(DATA_DIR) / "credits.json"
 LOCK = asyncio.Lock()
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+)
+logger = logging.getLogger("REZE-BOT")
 
-# ========== FUNCIONES DE CRÉDITOS ==========
+
+# ================= CREDITOS =================
 def load_credits() -> dict:
-    if not CREDITS_FILE.exists():
+    try:
+        if not CREDITS_FILE.exists():
+            return {}
+        with open(CREDITS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        logger.exception("No se pudo leer credits.json")
         return {}
-    with open(CREDITS_FILE, "r") as f:
-        return json.load(f)
+
 
 async def save_credits(credits: dict):
     async with LOCK:
-        with open(CREDITS_FILE, "w") as f:
+        with open(CREDITS_FILE, "w", encoding="utf-8") as f:
             json.dump(credits, f, indent=2)
+
 
 async def get_credits(user_id: int) -> int:
     credits = load_credits()
-    return credits.get(str(user_id), 0)
+    return int(credits.get(str(user_id), 0))
+
 
 async def add_credits(user_id: int, amount: int) -> int:
     credits = load_credits()
     uid = str(user_id)
-    new_bal = credits.get(uid, 0) + amount
-    credits[uid] = new_bal
+    credits[uid] = int(credits.get(uid, 0)) + amount
     await save_credits(credits)
-    return new_bal
+    return credits[uid]
+
 
 async def deduct_credits(user_id: int, amount: int) -> bool:
     credits = load_credits()
     uid = str(user_id)
-    current = credits.get(uid, 0)
+    current = int(credits.get(uid, 0))
+
     if current < amount:
         return False
+
     credits[uid] = current - amount
     await save_credits(credits)
     return True
 
-# ========== COMANDOS ==========
+
+# ================= PRIME WRAPPER =================
+async def run_prime_create():
+    """
+    Soporta prime.create() async o normal.
+    """
+    result = create()
+
+    if inspect.isawaitable(result):
+        result = await result
+
+    return result
+
+
+# ================= COMANDOS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🛒 *Amazon Account Generator*\n\n"
+        "🛒 *REZE COOKIES   *\n\n"
         "Usa /credits para ver tu saldo.\n"
-        "Usa /generate para crear una cuenta (cuesta 10 créditos).\n"
-        "Contacta al administrador para recargar créditos.\n\n",
+        f"Usa /generate para generar. Cuesta {COST_GENERATE} créditos.\n\n"
+        "Admin: /crd <user_id> <cantidad>",
         parse_mode="Markdown"
     )
+
 
 async def credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     bal = await get_credits(user_id)
-    await update.message.reply_text(f"💰 Tus créditos: *{bal}*", parse_mode="Markdown")
+
+    await update.message.reply_text(
+        f"💰 Tus créditos: *{bal}*",
+        parse_mode="Markdown"
+    )
+
 
 async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not await deduct_credits(user_id, 10):
-        await update.message.reply_text("❌ No tienes suficientes créditos (necesitas 10). Usa /credits.")
+
+    if not await deduct_credits(user_id, COST_GENERATE):
+        await update.message.reply_text(
+            f"❌ No tienes suficientes créditos. Necesitas {COST_GENERATE}."
+        )
         return
 
-    await update.message.reply_text("⏳ Generando cuenta de Amazon...")
+    await update.message.reply_text("⏳ Generando...")
 
     try:
-        result = await create()
-        if result and result.get("status") and result.get("cookies"):
+        result = await run_prime_create()
+
+        if not isinstance(result, dict):
+            await add_credits(user_id, COST_GENERATE)
+            await update.message.reply_text(
+                "❌ prime.py no devolvió un diccionario válido.\n"
+                f"Respuesta: {result}\n\n"
+                f"Se reembolsaron {COST_GENERATE} créditos."
+            )
+            return
+
+        if result.get("status") and result.get("cookies"):
             email = result.get("email", "No disponible")
             password = result.get("password", "No disponible")
             phone = result.get("phone", "No disponible")
             cookies = result.get("cookies", "")
 
             msg = (
-                f"✅ *Cuenta creada exitosamente*\n\n"
+                "✅ *Generación completada*\n\n"
                 f"📧 *Email:* `{email}`\n"
                 f"🔑 *Password:* `{password}`\n"
-                f"📱 *Teléfono:* `{phone}`\n"
+                f"📱 *Teléfono:* `{phone}`"
             )
+
             await update.message.reply_text(msg, parse_mode="Markdown")
 
-            MAX_MESSAGE_LEN = 4096
-            if len(cookies) <= MAX_MESSAGE_LEN:
-                await update.message.reply_text(f"🍪 *Cookies:*\n`{cookies}`", parse_mode="Markdown")
+            if len(cookies) <= 3500:
+                await update.message.reply_text(
+                    f"🍪 *Cookies:*\n`{cookies}`",
+                    parse_mode="Markdown"
+                )
             else:
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    suffix=".txt",
+                    delete=False,
+                    encoding="utf-8"
+                ) as f:
                     f.write(cookies)
                     temp_path = f.name
+
                 with open(temp_path, "rb") as f:
                     await update.message.reply_document(
-                        document=Document(f, filename="amazon_cookies.txt"),
-                        caption="🍪 Cookies completas (el mensaje era demasiado largo, se adjunta archivo)."
+                        document=f,
+                        filename="cookies.txt",
+                        caption="🍪 Cookies completas."
                     )
+
                 os.unlink(temp_path)
+
         else:
-            error_msg = result.get("error", "Error desconocido") if result else "Sin resultado"
-            await add_credits(user_id, 10)
-            await update.message.reply_text(f"❌ Falló la generación: {error_msg}\nSe reembolsaron tus 10 créditos.")
+            error_msg = result.get("error", "Error desconocido")
+            await add_credits(user_id, COST_GENERATE)
+
+            await update.message.reply_text(
+                f"❌ Falló la generación:\n`{error_msg}`\n\n"
+                f"Se reembolsaron {COST_GENERATE} créditos.",
+                parse_mode="Markdown"
+            )
+
     except Exception as e:
-        logger.exception("Error en generate")
-        await add_credits(user_id, 10)
-        await update.message.reply_text(f"⚠️ Error interno: {str(e)}\nCréditos reembolsados.")
+        logger.exception("Error ejecutando prime.create()")
+        await add_credits(user_id, COST_GENERATE)
+
+        await update.message.reply_text(
+            f"⚠️ Error interno:\n`{str(e)}`\n\n"
+            f"Se reembolsaron {COST_GENERATE} créditos.",
+            parse_mode="Markdown"
+        )
+
 
 async def crd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+
     if user_id != ADMIN_USER_ID:
         await update.message.reply_text("⛔ Solo el administrador puede usar este comando.")
         return
+
     if len(context.args) != 2:
         await update.message.reply_text("Uso: /crd <user_id> <cantidad>")
         return
+
     try:
         target_id = int(context.args[0])
         amount = int(context.args[1])
+
         new_bal = await add_credits(target_id, amount)
-        await update.message.reply_text(f"✅ Se añadieron {amount} créditos al usuario {target_id}. Nuevo saldo: {new_bal}")
+
+        await update.message.reply_text(
+            f"✅ Créditos agregados.\n\n"
+            f"👤 Usuario: `{target_id}`\n"
+            f"➕ Cantidad: `{amount}`\n"
+            f"💰 Nuevo saldo: `{new_bal}`",
+            parse_mode="Markdown"
+        )
+
     except ValueError:
-        await update.message.reply_text("Error: user_id y cantidad deben ser números.")
+        await update.message.reply_text("❌ user_id y cantidad deben ser números.")
 
-# ========== CIERRE LIMPIO (evita tareas pendientes) ==========
-async def shutdown(application: Application):
-    """Cierra correctamente el bot y cancela tareas pendientes."""
-    logger.info("Iniciando apagado...")
-    await application.stop()
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-    logger.info("Apagado completado.")
 
+async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"🆔 Tu ID es:\n`{update.effective_user.id}`",
+        parse_mode="Markdown"
+    )
+
+
+# ================= MAIN =================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("credits", credits))
     app.add_handler(CommandHandler("generate", generate))
     app.add_handler(CommandHandler("crd", crd))
+    app.add_handler(CommandHandler("me", me))
 
-    # Manejar señales de terminación (SIGTERM para Railway)
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    def signal_handler():
-        asyncio.create_task(shutdown(app))
-        loop.stop()
-    
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, signal_handler)
-    
-    logger.info("Bot iniciado. Esperando comandos...")
-    try:
-        loop.run_until_complete(app.initialize())
-        loop.run_until_complete(app.start())
-        loop.run_until_complete(app.updater.start_polling())
-        loop.run_forever()
-    except KeyboardInterrupt:
-        logger.info("Interrupción manual.")
-    finally:
-        loop.run_until_complete(shutdown(app))
-        loop.close()
+    logger.info("Bot iniciado correctamente")
+    app.run_polling()
+
 
 if __name__ == "__main__":
     main()
