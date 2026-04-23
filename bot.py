@@ -151,5 +151,16 @@ def main():
     logger.info("Bot iniciado")
     app.run_polling()
 
+
+import os
+from pathlib import Path
+
+# ========== CONFIGURACIÓN DE PERSISTENCIA ==========
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")   # Railway puede montar volumen aquí
+os.makedirs(DATA_DIR, exist_ok=True)
+CREDITS_FILE = Path(DATA_DIR) / "credits.json"
+LOCK = asyncio.Lock()
+
+
 if __name__ == "__main__":
     main()
