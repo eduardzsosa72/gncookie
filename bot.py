@@ -5,6 +5,7 @@ import logging
 import tempfile
 import inspect
 from pathlib import Path
+from unittest import result
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -107,12 +108,14 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         password = result.get("password")
         phone = result.get("phone")
         cookies = result.get("cookies", "")
+        creation_time = result.get("creation_time", "N/A")
 
         msg = (
             f"Cuenta creada\n\n"
             f"Email: {email}\n"
             f"Pass: {password}\n"
-            f"Phone: {phone}"
+            f"Phone: {phone}\n"
+            f"Creation Time: {creation_time}segundos "
         )
 
         await update.message.reply_text(msg)
