@@ -3,12 +3,13 @@ import json
 import os
 import logging
 import tempfile
+import signal
 from pathlib import Path
 from telegram import Update, Document
 from telegram.ext import Application, CommandHandler, ContextTypes
 import sys
 
-# Asegurar que podemos importar prime_modified (debe estar en la misma carpeta)
+# Asegurar que podemos importar prime
 sys.path.append(os.path.dirname(__file__))
 from prime import create
 
@@ -17,8 +18,12 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("No se encontró TELEGRAM_BOT_TOKEN en variables de entorno")
 
-ADMIN_USER_ID = 6319087504
-CREDITS_FILE = Path("credits.json")
+ADMIN_USER_ID = 6319087504  # Tu ID de administrador
+
+# Persistencia de créditos (Railway: usa /app/data si montas volumen)
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
+os.makedirs(DATA_DIR, exist_ok=True)
+CREDITS_FILE = Path(DATA_DIR) / "credits.json"
 LOCK = asyncio.Lock()
 
 logging.basicConfig(level=logging.INFO)
@@ -75,12 +80,11 @@ async def credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # Verificar créditos
     if not await deduct_credits(user_id, 10):
         await update.message.reply_text("❌ No tienes suficientes créditos (necesitas 10). Usa /credits.")
         return
 
-    await update.message.reply_text("⏳ Generando cuenta de Amazon....")
+    await update.message.reply_text("⏳ Generando cuenta de Amazon...")
 
     try:
         result = await create()
@@ -88,9 +92,8 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             email = result.get("email", "No disponible")
             password = result.get("password", "No disponible")
             phone = result.get("phone", "No disponible")
-            cookies = result.get("cookies", "")  # Cadena completa
+            cookies = result.get("cookies", "")
 
-            # Mensaje con datos de la cuenta
             msg = (
                 f"✅ *Cuenta creada exitosamente*\n\n"
                 f"📧 *Email:* `{email}`\n"
@@ -99,12 +102,10 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await update.message.reply_text(msg, parse_mode="Markdown")
 
-            # Enviar cookies completas (fallback: si es muy largo, enviar archivo)
             MAX_MESSAGE_LEN = 4096
             if len(cookies) <= MAX_MESSAGE_LEN:
                 await update.message.reply_text(f"🍪 *Cookies:*\n`{cookies}`", parse_mode="Markdown")
             else:
-                # Guardar en archivo temporal
                 with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as f:
                     f.write(cookies)
                     temp_path = f.name
@@ -115,8 +116,7 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     )
                 os.unlink(temp_path)
         else:
-            error_msg = result.get("error", "Error desconocido")
-            # Reembolsar créditos porque falló
+            error_msg = result.get("error", "Error desconocido") if result else "Sin resultado"
             await add_credits(user_id, 10)
             await update.message.reply_text(f"❌ Falló la generación: {error_msg}\nSe reembolsaron tus 10 créditos.")
     except Exception as e:
@@ -124,7 +124,6 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await add_credits(user_id, 10)
         await update.message.reply_text(f"⚠️ Error interno: {str(e)}\nCréditos reembolsados.")
 
-# Comando solo para administrador: añadir créditos a un usuario
 async def crd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_USER_ID:
@@ -141,25 +140,46 @@ async def crd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("Error: user_id y cantidad deben ser números.")
 
+# ========== CIERRE LIMPIO (evita tareas pendientes) ==========
+async def shutdown(application: Application):
+    """Cierra correctamente el bot y cancela tareas pendientes."""
+    logger.info("Iniciando apagado...")
+    await application.stop()
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    logger.info("Apagado completado.")
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("credits", credits))
     app.add_handler(CommandHandler("generate", generate))
     app.add_handler(CommandHandler("crd", crd))
-    logger.info("Bot iniciado")
-    app.run_polling()
 
-
-import os
-from pathlib import Path
-
-# ========== CONFIGURACIÓN DE PERSISTENCIA ==========
-DATA_DIR = os.getenv("DATA_DIR", "/app/data")   # Railway puede montar volumen aquí
-os.makedirs(DATA_DIR, exist_ok=True)
-CREDITS_FILE = Path(DATA_DIR) / "credits.json"
-LOCK = asyncio.Lock()
-
+    # Manejar señales de terminación (SIGTERM para Railway)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    def signal_handler():
+        asyncio.create_task(shutdown(app))
+        loop.stop()
+    
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, signal_handler)
+    
+    logger.info("Bot iniciado. Esperando comandos...")
+    try:
+        loop.run_until_complete(app.initialize())
+        loop.run_until_complete(app.start())
+        loop.run_until_complete(app.updater.start_polling())
+        loop.run_forever()
+    except KeyboardInterrupt:
+        logger.info("Interrupción manual.")
+    finally:
+        loop.run_until_complete(shutdown(app))
+        loop.close()
 
 if __name__ == "__main__":
     main()
