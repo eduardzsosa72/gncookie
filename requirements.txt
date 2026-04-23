@@ -9,3 +9,4 @@ python-dotenv
 urllib3
 requests
 certifi
+structlog>=24.1.0
