@@ -17,7 +17,7 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("No se encontró TELEGRAM_BOT_TOKEN en variables de entorno")
 
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", 0))
+ADMIN_USER_ID = 6319087504
 CREDITS_FILE = Path("credits.json")
 LOCK = asyncio.Lock()
 
