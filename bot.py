@@ -9,13 +9,12 @@ from pathlib import Path
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# Importar prime.py
 from prime import create
 
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
-    raise RuntimeError("Falta TELEGRAM_BOT_TOKEN en Railway Variables")
+    raise RuntimeError("Falta TELEGRAM_BOT_TOKEN")
 
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "6319087504"))
 COST_GENERATE = int(os.getenv("COST_GENERATE", "10"))
@@ -26,209 +25,134 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CREDITS_FILE = Path(DATA_DIR) / "credits.json"
 LOCK = asyncio.Lock()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("REZE-BOT")
 
-
 # ================= CREDITOS =================
-def load_credits() -> dict:
+def load_credits():
+    if not CREDITS_FILE.exists():
+        return {}
     try:
-        if not CREDITS_FILE.exists():
-            return {}
         with open(CREDITS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
-        logger.exception("No se pudo leer credits.json")
+    except:
         return {}
 
-
-async def save_credits(credits: dict):
+async def save_credits(data):
     async with LOCK:
         with open(CREDITS_FILE, "w", encoding="utf-8") as f:
-            json.dump(credits, f, indent=2)
+            json.dump(data, f, indent=2)
 
+async def get_credits(user_id):
+    return load_credits().get(str(user_id), 0)
 
-async def get_credits(user_id: int) -> int:
-    credits = load_credits()
-    return int(credits.get(str(user_id), 0))
-
-
-async def add_credits(user_id: int, amount: int) -> int:
-    credits = load_credits()
+async def add_credits(user_id, amount):
+    data = load_credits()
     uid = str(user_id)
-    credits[uid] = int(credits.get(uid, 0)) + amount
-    await save_credits(credits)
-    return credits[uid]
+    data[uid] = data.get(uid, 0) + amount
+    await save_credits(data)
+    return data[uid]
 
-
-async def deduct_credits(user_id: int, amount: int) -> bool:
-    credits = load_credits()
+async def deduct_credits(user_id, amount):
+    data = load_credits()
     uid = str(user_id)
-    current = int(credits.get(uid, 0))
 
-    if current < amount:
+    if data.get(uid, 0) < amount:
         return False
 
-    credits[uid] = current - amount
-    await save_credits(credits)
+    data[uid] -= amount
+    await save_credits(data)
     return True
 
-
-# ================= PRIME WRAPPER =================
-async def run_prime_create():
-    """
-    Soporta prime.create() async o normal.
-    """
+# ================= PRIME =================
+async def run_create():
     result = create()
-
     if inspect.isawaitable(result):
         result = await result
-
     return result
-
 
 # ================= COMANDOS =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🛒 *REZE COOKIES   *\n\n"
-        "Usa /credits para ver tu saldo.\n"
-        f"Usa /generate para generar. Cuesta {COST_GENERATE} créditos.\n\n"
-        "Admin: /crd <user_id> <cantidad>",
-        parse_mode="Markdown"
+        "REZE CHK\n\n"
+        "Usa /credits para ver tu saldo\n"
+        f"Usa /generate (cuesta {COST_GENERATE})\n\n"
+        "Admin: /crd user_id cantidad"
     )
-
 
 async def credits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    bal = await get_credits(user_id)
-
-    await update.message.reply_text(
-        f"💰 Tus créditos: *{bal}*",
-        parse_mode="Markdown"
-    )
-
+    bal = await get_credits(update.effective_user.id)
+    await update.message.reply_text(f"Creditos: {bal}")
 
 async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
     if not await deduct_credits(user_id, COST_GENERATE):
-        await update.message.reply_text(
-            f"❌ No tienes suficientes créditos. Necesitas {COST_GENERATE}."
-        )
+        await update.message.reply_text("No tienes creditos")
         return
 
-    await update.message.reply_text("⏳ Generando...")
+    await update.message.reply_text("Generando...")
 
     try:
-        result = await run_prime_create()
+        result = await run_create()
 
-        if not isinstance(result, dict):
+        if not result or not result.get("status"):
             await add_credits(user_id, COST_GENERATE)
             await update.message.reply_text(
-                "❌ prime.py no devolvió un diccionario válido.\n"
-                f"Respuesta: {result}\n\n"
-                f"Se reembolsaron {COST_GENERATE} créditos."
+                f"Error: {result.get('error', 'desconocido')}\nReembolso aplicado"
             )
             return
 
-        if result.get("status") and result.get("cookies"):
-            email = result.get("email", "No disponible")
-            password = result.get("password", "No disponible")
-            phone = result.get("phone", "No disponible")
-            cookies = result.get("cookies", "")
+        email = result.get("email")
+        password = result.get("password")
+        phone = result.get("phone")
+        cookies = result.get("cookies", "")
 
-            msg = (
-                "✅ *Generación completada*\n\n"
-                f"📧 *Email:* `{email}`\n"
-                f"🔑 *Password:* `{password}`\n"
-                f"📱 *Teléfono:* `{phone}`"
-            )
-
-            await update.message.reply_text(msg, parse_mode="Markdown")
-
-            if len(cookies) <= 3500:
-                await update.message.reply_text(
-                    f"🍪 *Cookies:*\n`{cookies}`",
-                    parse_mode="Markdown"
-                )
-            else:
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    suffix=".txt",
-                    delete=False,
-                    encoding="utf-8"
-                ) as f:
-                    f.write(cookies)
-                    temp_path = f.name
-
-                with open(temp_path, "rb") as f:
-                    await update.message.reply_document(
-                        document=f,
-                        filename="cookies.txt",
-                        caption="🍪 Cookies completas."
-                    )
-
-                os.unlink(temp_path)
-
-        else:
-            error_msg = result.get("error", "Error desconocido")
-            await add_credits(user_id, COST_GENERATE)
-
-            await update.message.reply_text(
-                f"❌ Falló la generación:\n`{error_msg}`\n\n"
-                f"Se reembolsaron {COST_GENERATE} créditos.",
-                parse_mode="Markdown"
-            )
-
-    except Exception as e:
-        logger.exception("Error ejecutando prime.create()")
-        await add_credits(user_id, COST_GENERATE)
-
-        await update.message.reply_text(
-            f"⚠️ Error interno:\n`{str(e)}`\n\n"
-            f"Se reembolsaron {COST_GENERATE} créditos.",
-            parse_mode="Markdown"
+        msg = (
+            f"Cuenta creada\n\n"
+            f"Email: {email}\n"
+            f"Pass: {password}\n"
+            f"Phone: {phone}"
         )
 
+        await update.message.reply_text(msg)
+
+        if len(cookies) < 3500:
+            await update.message.reply_text(cookies)
+        else:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".txt", mode="w", encoding="utf-8") as f:
+                f.write(cookies)
+                path = f.name
+
+            with open(path, "rb") as f:
+                await update.message.reply_document(f, filename="cookies.txt")
+
+            os.unlink(path)
+
+    except Exception as e:
+        logger.exception("Error")
+        await add_credits(user_id, COST_GENERATE)
+        await update.message.reply_text(f"Error interno: {str(e)}")
 
 async def crd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if user_id != ADMIN_USER_ID:
-        await update.message.reply_text("⛔ Solo el administrador puede usar este comando.")
-        return
-
-    if len(context.args) != 2:
-        await update.message.reply_text("Uso: /crd <user_id> <cantidad>")
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("No autorizado")
         return
 
     try:
-        target_id = int(context.args[0])
+        uid = int(context.args[0])
         amount = int(context.args[1])
 
-        new_bal = await add_credits(target_id, amount)
+        new_bal = await add_credits(uid, amount)
 
         await update.message.reply_text(
-            f"✅ Créditos agregados.\n\n"
-            f"👤 Usuario: `{target_id}`\n"
-            f"➕ Cantidad: `{amount}`\n"
-            f"💰 Nuevo saldo: `{new_bal}`",
-            parse_mode="Markdown"
+            f"Creditos añadidos\nUser: {uid}\nNuevo saldo: {new_bal}"
         )
-
-    except ValueError:
-        await update.message.reply_text("❌ user_id y cantidad deben ser números.")
-
+    except:
+        await update.message.reply_text("Uso: /crd user_id cantidad")
 
 async def me(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"🆔 Tu ID es:\n`{update.effective_user.id}`",
-        parse_mode="Markdown"
-    )
-
+    await update.message.reply_text(str(update.effective_user.id))
 
 # ================= MAIN =================
 def main():
@@ -240,9 +164,8 @@ def main():
     app.add_handler(CommandHandler("crd", crd))
     app.add_handler(CommandHandler("me", me))
 
-    logger.info("Bot iniciado correctamente")
+    logger.info("Bot iniciado")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
