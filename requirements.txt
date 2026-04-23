@@ -7,3 +7,5 @@ beautifulsoup4
 lxml
 python-dotenv
 urllib3
+requests
+certifi
