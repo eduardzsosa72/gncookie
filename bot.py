@@ -64,8 +64,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛒 *Amazon Account Generator*\n\n"
         "Usa /credits para ver tu saldo.\n"
         "Usa /generate para crear una cuenta (cuesta 10 créditos).\n"
-        "Contacta al administrador para recargar créditos.\n\n"
-        "Las cookies se enviarán completas (como texto o archivo si son muy largas).",
+        "Contacta al administrador para recargar créditos.\n\n",
         parse_mode="Markdown"
     )
 
@@ -81,7 +80,7 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No tienes suficientes créditos (necesitas 10). Usa /credits.")
         return
 
-    await update.message.reply_text("⏳ Generando cuenta de Amazon... esto puede tomar hasta 60 segundos.")
+    await update.message.reply_text("⏳ Generando cuenta de Amazon....")
 
     try:
         result = await create()
@@ -126,13 +125,13 @@ async def generate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Error interno: {str(e)}\nCréditos reembolsados.")
 
 # Comando solo para administrador: añadir créditos a un usuario
-async def addcredits(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def crd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_USER_ID:
         await update.message.reply_text("⛔ Solo el administrador puede usar este comando.")
         return
     if len(context.args) != 2:
-        await update.message.reply_text("Uso: /addcredits <user_id> <cantidad>")
+        await update.message.reply_text("Uso: /crd <user_id> <cantidad>")
         return
     try:
         target_id = int(context.args[0])
@@ -147,7 +146,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("credits", credits))
     app.add_handler(CommandHandler("generate", generate))
-    app.add_handler(CommandHandler("addcredits", addcredits))
+    app.add_handler(CommandHandler("crd", crd))
     logger.info("Bot iniciado")
     app.run_polling()
 
